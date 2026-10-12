@@ -1,0 +1,137 @@
+// Mission 01: the KQL I ran in Sentinel → Logs
+
+// Is my machine showing up at all yet?
+Heartbeat
+| take 10
+
+// When did my machine last check in?
+Heartbeat
+| summarize LastSeen = max(TimeGenerated) by Computer
+
+// When did my machine send its very first heartbeat?
+Heartbeat
+| where Computer startswith "WKS-L58"
+| summarize FirstHeartbeat = min(TimeGenerated)
+
+// Is the data current, or is the machine's clock off? (event time vs. when it reached the workspace)
+Heartbeat
+| project TimeGenerated, ingestion_time(), Delay = ingestion_time() - TimeGenerated
+| take 20
+
+// What severity levels are coming into the Event table?
+Event
+| summarize count() by EventLevelName
+
+// Who logged on to my machine, and when? (Event table, where the details are one big text field)
+Event
+| where EventLog == "Security" and EventID == 4624
+| project TimeGenerated, Computer, RenderedDescription
+| order by TimeGenerated desc
+
+// Who logged on, and how? (SecurityEvent, where account, logon type and IP are proper columns)
+SecurityEvent
+| where EventID == 4624
+| project TimeGenerated, Computer, Account, LogonType, IpAddress
+| order by TimeGenerated desc
+
+// When was my own first RDP logon? (logon type 10 = new session, 7 = reconnecting to an open one)
+// NB: this only returns the earliest RDP logon in SecurityEvent (from ~15:08 UTC on 7 Oct). It came back as a 7,
+// so the real type 10 happened before collection started: confirmed in the local Security log at 7 Oct 09:38:29 UTC (see runbook, step 5).
+SecurityEvent
+| where EventID == 4624 and LogonType in (10, 7)
+| project TimeGenerated, LogonType, IpAddress
+| order by TimeGenerated asc
+| take 1
+
+// Did the Event table really stop getting Security logs after I removed them from dcr-windowsevents?
+Event
+| where EventLog == "Security"
+| summarize LastSecurityRow = max(TimeGenerated)
+
+// Step 6: what happened on my machine during the window when it wasn't me? (the intrusion was on 9 Oct 2026 at 12:30:07 UTC)
+SecurityEvent
+| where TimeGenerated between (datetime(2026-10-09 12:25) .. datetime(2026-10-09 12:35))
+| summarize count() by EventID, Activity
+| order by count_ desc
+
+// Step 6: every account-management event in the last 30 days (this is how I found svc_backup without knowing the Event ID first)
+SecurityEvent
+| where TimeGenerated > ago(30d)
+| where EventID in (4720, 4722, 4724, 4725, 4726, 4728, 4732, 4738, 4781)
+| project TimeGenerated, EventID, Activity, SubjectAccount, TargetAccount, MemberSid, Computer
+| order by TimeGenerated asc
+
+// Step 6: was I connected when it happened? (my RDP logons that day)
+SecurityEvent
+| where TimeGenerated between (datetime(2026-10-09) .. datetime(2026-10-10))
+| where EventID == 4624 and LogonType in (10, 7)
+| project TimeGenerated, LogonType, IpAddress, TargetAccount
+
+// What just happened?: is the qemu-ga trace in my SIEM? (0 results: only Critical/Error/Warning from Application are collected)
+Event
+| where Source == "qemu-ga" or RenderedDescription has "qemu-ga"
+| sort by TimeGenerated desc
+| take 10
+
+// ---------------------------------------------------------------------------
+// Follow-up after coach feedback
+// ---------------------------------------------------------------------------
+
+// RDP type 7 vs 10: check the Event table too. Chain A collected the Security log from ~14:16 to 15:12 UTC on 7 Oct,
+// before I moved it to chain B. Event keeps the fields in EventData (XML), so they have to be parsed out.
+Event
+| where EventLog == "Security" and EventID == 4624
+| extend d = parse_xml(EventData)
+| mv-apply f = d.DataItem.EventData.Data on (
+    summarize Fields = make_bag(bag_pack(tostring(f["@Name"]), tostring(f["#text"])))
+  )
+| extend LogonType = toint(Fields.LogonType), IpAddress = tostring(Fields.IpAddress), User = tostring(Fields.TargetUserName)
+| where LogonType in (10, 7)
+| project TimeGenerated, LogonType, User, IpAddress
+| order by TimeGenerated asc
+
+// RDP type 7 vs 10: on the workstation itself (PowerShell, not KQL). Only works if the local Security log hasn't rolled over yet.
+//   Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4624} -Oldest |
+//     Where-Object { $_.Properties[8].Value -in 10,7 } |
+//     Select-Object -First 5 TimeCreated, @{n='LogonType';e={$_.Properties[8].Value}}, @{n='IpAddress';e={$_.Properties[18].Value}}
+// The session's whole life (21 = logon, 24 = disconnected, 25 = reconnected):
+//   Get-WinEvent -LogName 'Microsoft-Windows-TerminalServices-LocalSessionManager/Operational' -Oldest |
+//     Where-Object Id -in 21,24,25 | Select-Object -First 10 TimeCreated, Id, Message
+
+// Daily cap: did collection stop because the cap was hit? (use as a log alert: any result = the SIEM went blind)
+_LogOperation
+| where Category =~ "Ingestion"
+| where Detail has "OverQuota"
+| project TimeGenerated, Operation, Detail
+
+// Daily cap: how close am I today? (Quantity is in MB, my cap is 0.2 GB = 200 MB; alert at 80% = 160 MB)
+Usage
+| where TimeGenerated > startofday(now())
+| where IsBillable == true
+| summarize TodayMB = sum(Quantity)
+| extend PercentOfCap = round(100.0 * TodayMB / 200, 1)
+
+// Daily cap: which table is growing, hour by hour? (a flood shows as a spike, e.g. SecurityEvent full of 4625)
+Usage
+| where TimeGenerated > ago(2d)
+| where IsBillable == true
+| summarize MB = sum(Quantity) by bin(TimeGenerated, 1h), DataType
+| render timechart
+
+// Analytics rule: new local account added to a privileged local group within 10 min (rules/new-local-account-added-to-privileged-group.yaml)
+// Run over the last 30 days: it should return the svc_backup row from 9 Oct 12:30:07 UTC.
+let window = 10m;
+let PrivilegedLocalGroups = dynamic(["S-1-5-32-544", "S-1-5-32-555", "S-1-5-32-580", "S-1-5-32-562"]);
+let Created = SecurityEvent
+    | where EventID == 4720
+    | project CreatedTime = TimeGenerated, Computer, NewAccountSid = TargetSid,
+              NewAccount = strcat(TargetDomainName, "\\", TargetUserName), CreatedBy = SubjectAccount;
+let AddedToGroup = SecurityEvent
+    | where EventID == 4732 and TargetSid in (PrivilegedLocalGroups)
+    | project AddedTime = TimeGenerated, Computer, MemberSid,
+              Group = strcat(TargetDomainName, "\\", TargetUserName), AddedBy = SubjectAccount;
+Created
+| join kind=inner AddedToGroup on $left.Computer == $right.Computer, $left.NewAccountSid == $right.MemberSid
+| where AddedTime between ((CreatedTime - 5s) .. (CreatedTime + window))
+| extend SecondsBetween = datetime_diff('millisecond', AddedTime, CreatedTime) / 1000.0
+| project CreatedTime, AddedTime, SecondsBetween, Computer, NewAccount, NewAccountSid, Group, CreatedBy, AddedBy
