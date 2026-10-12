@@ -161,13 +161,34 @@ My own Part 1 activity (labuser, from my own IP) is in the same logs. The intrud
 
 **Question:** Which account did the intruder use to get into your machine? Submit the account name only, without machine or domain in front.
 
-**Instructions:** I use the same two methods as in Part 1 (see "Finding my labuser logon, two ways"), but on the attack window and without `labuser`:
-1. In Sentinel, list the successful RDP logons (4624, type 10) in the attack window, and the failures (4625) before them (queries "Part 2" in `queries.kql`).
-2. Rule out my own activity: my domain account, and `labuser` from my own IP. The briefing warns: "when a login looks like it was you, it probably was". The intruder uses a different account, from a different machine.
-3. Cross-check the result on the workstation with the PowerShell method.
-4. TODO: what I found.
+**First try (wrong):** my type 10 query only returned `labuser`, so I submitted `HAM{labuser}`. It was rejected. That was my own Part 1 logon, exactly what the briefing warned about: "when a login looks like it was you, it probably was".
 
-**Answer:** TODO → `HAM{...}` (not submitted yet, the flag isn't open)
+**Instructions (on the workstation):**
+1. Open PowerShell as administrator.
+2. List every local account, whether it's enabled, and when it last logged on:
+
+```powershell
+Get-LocalUser | Select-Object Name, Enabled, LastLogon
+```
+
+3. List every account that has ever opened an RDP session (4624 type 10), once each:
+
+```powershell
+Get-WinEvent -LogName Security -FilterXPath "*[System[(EventID=4624)] and EventData[Data[@Name='LogonType']='10']]" | ForEach-Object {
+    [xml]$xml = $_.ToXml()
+    ($xml.Event.EventData.Data | Where-Object Name -eq 'TargetUserName').'#text'
+} | Select-Object -Unique
+```
+
+4. Compare the two lists with what I know is mine (`mustafa`, and `labuser` from Part 1). The account left over is `helpdesk`, which I had already noted in Mission 1 as "from an earlier lab setup".
+
+TODO: the `LastLogon` of `helpdesk` from step 2, and whether it showed up in step 3. If it **didn't** show up as type 10, the intruder didn't open an RDP desktop session: they logged on another way (for example a network logon, type 3). That would also explain why my first query, filtered on type 10, only found `labuser`.
+
+**Instructions (in the SIEM):** TODO: confirm `helpdesk` in Sentinel (query "Part 2: everything about the compromised account" in `queries.kql`): the 4625s and the 4624, their logon type, time and source IP. The case file needs the SIEM evidence, not only the workstation.
+
+**Lesson:** filtering too early hides the answer. In Mission 1 it was filtering on an Event ID I already expected. Here it was filtering on logon type 10 because I assumed the intruder used RDP. Listing *all* accounts first, then narrowing down, found it.
+
+**Answer:** `HAM{helpdesk}` (accepted)
 
 ### 2. M2: Attack source
 

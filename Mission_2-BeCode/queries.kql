@@ -50,6 +50,14 @@ SecurityEvent
 | project TimeGenerated, Computer, TargetUserName, IpAddress, LogonTypeName, Activity
 | sort by TimeGenerated desc
 
+// Part 2: everything about the compromised account (failures and successes, every logon type, in time order)
+SecurityEvent
+| where TimeGenerated > ago(7d)
+| where TargetUserName == "helpdesk"
+| where EventID in (4624, 4625, 4634, 4647)
+| project TimeGenerated, EventID, Activity, LogonType, LogonTypeName, IpAddress, WorkstationName, Status, SubStatus
+| sort by TimeGenerated asc
+
 // Who was knocking? Failed and successful logons per account and source, excluding machine accounts
 let windowStart = datetime(2026-10-12 00:00);   // TODO: attack window start (UTC)
 let windowEnd   = datetime(2026-10-12 23:59);   // TODO: attack window end (UTC)

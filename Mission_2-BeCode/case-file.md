@@ -29,7 +29,7 @@ TODO: three or four sentences. Who got in, from where, how, what they did, and w
 
 ## Findings
 
-**Account used:** TODO. **Source:** TODO. **Technique:** TODO.
+**Account used:** `helpdesk`, a local account that already existed on WKS-L58. **Source:** TODO. **Technique:** TODO.
 
 TODO: how I got there, with the queries (see `queries.kql`) and why I'm sure it wasn't my own Part 1 activity.
 
