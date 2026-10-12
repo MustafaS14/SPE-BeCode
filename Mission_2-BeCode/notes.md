@@ -96,6 +96,36 @@ SecurityEvent
 2. Rule out my own logons (my domain account, and `labuser` from Part 1 from my own IP). The account left over in the attack window is the intruder's.
 3. TODO: what it looked like (time, and the failures before it).
 
+**Comparing the two methods**
+
+I found the account two ways: on the workstation, and in Sentinel. As in Mission 1, comparing the two sources shows what each one can and can't be trusted for.
+
+| | Workstation (local Security log, PowerShell) | SIEM (`SecurityEvent` in Sentinel, KQL) |
+|---|---|---|
+| Where the data lives | On WKS-L58 itself, the machine that was broken into | In my Log Analytics workspace, copied there by the AMA through `dcr-securityevents` |
+| What I need to read it | An RDP session and an admin PowerShell on the compromised machine | Only the portal. I never have to touch the machine |
+| Can the attacker tamper with it? | Yes. With admin rights they can clear the log (that leaves a 1102, but the logons are gone) | Not after ingestion. Events already sent stay in the workspace even if the local log is wiped |
+| Format | Raw XML. Fields are read by name through `ToXml()` (reading `Properties[n]` by position is fragile) | Already split into columns: `TargetUserName`, `IpAddress`, `LogonTypeName`, `Activity` |
+| Which events | Everything the audit policy writes | Only what the DCR collects (the "Common" set), and only while under the daily cap |
+| How far back | As far as the local log goes before it rolls over (20 MB; mine goes back to 21 September) | Only since collection started (7 October, ~15:08 UTC for `SecurityEvent`), for the workspace's retention |
+| Time zone | The VM's local time (Romance Standard Time, UTC+2 in October) | UTC (`TimeGenerated`) |
+| Delay | Immediate | A few minutes of ingestion delay |
+| Seeing the whole picture | Hard. `-MaxEvents 1` only gives the newest logon, and counting failures needs another script | Easy. Time range, sort, `summarize` the 4625s and 4624s, and the same query works across several machines |
+| Allowed for the flag? | Only as a cross-check. The briefing says "using only your own Sentinel" | Yes, this is the evidence |
+
+**A trap in the PowerShell method:** `-MaxEvents 1` returns the *newest* type 10 logon, not necessarily the intruder's. If I had signed in after the attack (as `labuser` in Part 1, or with my own account), that's what it would return. So the local result only counts if its time and source IP fall inside the attack window and don't match my own logons.
+
+**Do both sources agree?**
+
+| Field | Workstation | SIEM | Same? |
+|---|---|---|---|
+| Account (`TargetUserName`) | TODO | TODO | TODO |
+| Time of the logon | TODO (local time → UTC) | TODO (UTC) | TODO |
+| Source IP (`IpAddress`) | TODO | TODO | TODO |
+| Logon type | 10 | 10 | Yes, both queries filter on it |
+
+TODO: one or two sentences. If they match, the SIEM can be trusted for this attack. If not, why (delay, a filtered event, the daily cap).
+
 **Answer:** TODO → `HAM{...}` (not submitted yet, the flag isn't open)
 
 ### 2. M2: Attack source

@@ -33,6 +33,18 @@ TODO: three or four sentences. Who got in, from where, how, what they did, and w
 
 TODO: how I got there, with the queries (see `queries.kql`) and why I'm sure it wasn't my own Part 1 activity.
 
+## Two sources, one answer
+
+I confirmed the logon in two places: the workstation's own Security log (PowerShell) and Sentinel (KQL). The case rests on Sentinel, because the mission asks for it and because events there can't be wiped by someone who gets admin on the machine. The local log is a cross-check.
+
+| Field | Workstation | Sentinel | Same? |
+|---|---|---|---|
+| Account | TODO | TODO | TODO |
+| Logon time (UTC) | TODO | TODO | TODO |
+| Source IP | TODO | TODO | TODO |
+
+What the comparison shows: TODO (for example, whether the SIEM has the logon at the same second, and how long ingestion took). The full comparison of the two methods is in `notes.md`.
+
 ## MITRE ATT&CK mapping
 
 | Step | Tactic | Technique (ID) |
