@@ -43,7 +43,7 @@ I first filtered on RDP logons (type 10) and only found my own `labuser` test, w
 - **End of the attempts:** the failures stop at the first success, which is used immediately: type 3 (NLA), then a type 10 RDP session two seconds later.
 - **Repetition:** the same five failures and a success, four times. That fits a script replaying a short password list.
 
-The account was never locked: the attempt after five failures still worked each time. So there's no account lockout, or the threshold is above five. See `notes.md`, challenge 3, for the full reasoning and both sources.
+The account was never locked: the attempt after five failures still worked each time. So there's no account lockout, or the threshold is above five. See `notes.md`, challenge 4, for the full reasoning and both sources.
 
 ## Two sources, one answer
 
