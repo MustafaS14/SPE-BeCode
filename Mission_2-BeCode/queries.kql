@@ -43,7 +43,7 @@ SecurityEvent
 // Part 2: hunt (Temps 1)
 // ---------------------------------------------------------------------------
 
-// Every successful RDP logon, newest first (this is how I found the compromised account)
+// Every successful RDP logon, newest first (how I found my own labuser logon in Part 1, and where the intruder's will show up in Part 2)
 SecurityEvent
 | where EventID == 4624
 | where LogonType == 10
