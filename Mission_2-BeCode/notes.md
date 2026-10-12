@@ -163,6 +163,8 @@ My own Part 1 activity (labuser, from my own IP) is in the same logs. The intrud
 
 **Nudge 3:** Once you have the successful login, everything you need about who and from where is on that same event. Read it line by line.
 
+**How I work each challenge:** I answer it twice, once with PowerShell on the workstation and once with KQL in Sentinel, then compare the two. When they agree, the answer is solid and I know the SIEM can be trusted for that kind of event. When they differ, the difference itself tells me something about what each source can and can't see.
+
 ### 1. M2: Compromised account
 
 **Question:** Which account did the intruder use to get into your machine? Submit the account name only, without machine or domain in front.
@@ -234,7 +236,16 @@ SecurityEvent
 
 The first five failures of round 1 are at 12:39:57.465, .547, .625, .705 and .787, about 80 ms apart. No person types five passwords in a third of a second: it's a script.
 
-**Workstation vs SIEM:** the workstation's `LastLogon` for `helpdesk` (12:49:55 UTC) falls inside round 2 in the SIEM, so both sources agree. I ran `Get-LocalUser` between round 2 and round 3, which is why it shows round 2 and not the last one.
+**PowerShell vs SIEM**
+
+| | PowerShell (workstation) | KQL (Sentinel) |
+|---|---|---|
+| Code | `Get-LocalUser` (every local account and its `LastLogon`), then `Get-WinEvent` for 4624 type 10, unique user names | `SecurityEvent`, 4624 and 4625 for `helpdesk`, `summarize` by logon type, IP and workstation |
+| Starting point | The list of accounts that *exist* on the machine | The list of logons that *happened* |
+| Result | `helpdesk` is enabled, last logon 12:49:55 UTC, not one of mine | `helpdesk`: 20 failed logons and 4 successful logins from `10.50.0.100`, 12:39:57 → 13:12:32 UTC |
+| Agree? | Yes: `LastLogon` 12:49:55 falls inside round 2 in Sentinel. I ran `Get-LocalUser` between rounds 2 and 3, which is why it shows round 2 and not the last one | |
+
+What it signifies: PowerShell was better for *finding* the account. Starting from the list of existing accounts showed the one I didn't recognise, while my first KQL query, filtered on what I expected, only showed my own `labuser`. Sentinel was better for *understanding* it: `Get-LocalUser` only keeps the last logon, with no source and no failures, while the SIEM has every attempt.
 
 **Lesson:** filtering too early hides the answer. In Mission 1 it was filtering on an Event ID I already expected. Here it was filtering on logon type 10 because I assumed the intruder used RDP. Listing *all* accounts first, then narrowing down, found it.
 
@@ -283,7 +294,16 @@ SecurityEvent
 
 2. The summary query from challenge 1 confirms it for the failed logons too: every `helpdesk` logon, failed or successful, comes from **`10.50.0.100`**, a machine called **WKSTN-07**. On the type 10 events, `WorkstationName` shows WKS-L58 (my machine, where the session opens), so the source machine's name is read from the type 3 events.
 
-**Comparison:** both sources give the same four RDP sessions, from the same IP, at the same times (for example 12:40:01 locally and 12:40:01.480 in Sentinel, 13:12:32 and 13:12:32.657). `10.50.0.100` is not my address: my own connections all come through the lab gateway (`10.50.0.1`), as my `labuser` test showed. Here the workstation gives the IP as well, because I read it from the 4624 events instead of from `Get-LocalUser`.
+**PowerShell vs SIEM**
+
+| | PowerShell (workstation) | KQL (Sentinel) |
+|---|---|---|
+| Code | `Get-WinEvent` with an XPath filter on 4624 type 10, then reading `TargetUserName` and `IpAddress` out of each event's XML, keeping `helpdesk` | `where EventID == 4624`, `where LogonType == 10`, `where TargetUserName == "helpdesk"`, `project` the columns |
+| Effort | A `ForEach-Object` loop that parses XML by hand | Four lines. The fields are already columns |
+| Result | 4 sessions from `10.50.0.100`: 12:40:01, 12:49:55, 13:05:54, 13:12:32 UTC | The same 4 sessions from `10.50.0.100`, to the second (12:40:01.480, …, 13:12:32.657) |
+| Agree? | Yes, same sessions, same IP, same times | |
+
+What it signifies: for the source IP, both sources say exactly the same thing, so nothing was lost on the way from the machine to the SIEM. The difference is the cost: on the workstation I have to know the event structure and parse it myself, while in Sentinel the same answer is a filter on ready-made columns. `10.50.0.100` isn't my address either: my own connections all come through the lab gateway (`10.50.0.1`), as my `labuser` test showed.
 
 **Answer:** `HAM{10.50.0.100}` (accepted)
 
@@ -334,6 +354,17 @@ SecurityEvent
 | 12:49:52.498 | 4625 (failed) | helpdesk | 3 |
 | … | the same pattern at 12:49, 13:05 and 13:12 | | |
 
+**PowerShell vs SIEM**
+
+| | PowerShell (workstation) | KQL (Sentinel) |
+|---|---|---|
+| Code | `Get-WinEvent` for all 4625s, reading `TargetUserName`, `IpAddress` and `SubStatus` from the XML, keeping `10.50.0.100` | `where EventID in (4625, 4624)`, `where IpAddress == "10.50.0.100"`, sorted by time |
+| What it shows | Only the failures, but **with the reason** (`SubStatus` `0xc000006a` = wrong password) | Failures **and** successes in one timeline, to the millisecond |
+| Time precision | Seconds: the five failures of a round share one timestamp (15:12:28 local) | Milliseconds: the five failures are 80 ms apart |
+| Agree? | Yes: same account, same IP, groups of five at the same moments | |
+
+What it signifies: here the two sources complete each other. The workstation gave me *why* the logons failed (a wrong password for a real account). The SIEM gave me the *shape*: failures and successes together, close enough in time to prove a script. `SubStatus` is in `SecurityEvent` too. I didn't project it, but the SIEM alone could have answered both. The workstation was simply where I saw the reason first.
+
 **Why I'm calling it brute force:**
 
 1. **The speed.** Five failed logons in 0.32 seconds, about 80 ms apart. Nobody types five passwords that fast, so it's a tool, not a person.
@@ -344,7 +375,7 @@ SecurityEvent
 
 So it's brute force, more precisely password guessing (MITRE ATT&CK T1110.001), over RDP. One more thing it shows: the account was never locked, since the attempt after five wrong passwords still worked. So either there's no account lockout policy on WKS-L58, or its threshold is higher than five.
 
-**Answer:** `HAM{brute_force}` (accepted)
+**Answer:** `HAM{brute_force}` (accepted). `HAM{T1021.001}` is also accepted: that's the MITRE ID for *Remote Services: Remote Desktop Protocol*. The two answers describe two halves of the same attack: brute force is how the password was found, RDP is how the intruder used it to get in.
 
 ### 4. M2: Proof of access (category Mission 2 · Attack)
 

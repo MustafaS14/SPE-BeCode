@@ -32,7 +32,7 @@ On 12 October 2026 between 12:39 and 13:12 UTC, someone at `10.50.0.100` (WKSTN-
 
 ## Findings
 
-**Account used:** `helpdesk`, a local account that already existed on WKS-L58. **Source:** `10.50.0.100` (WKSTN-07). **Technique:** brute force, password guessing (T1110.001).
+**Account used:** `helpdesk`, a local account that already existed on WKS-L58. **Source:** `10.50.0.100` (WKSTN-07). **Technique:** brute force, password guessing (T1110.001). (CTFd accepted `HAM{brute_force}`, and `HAM{T1021.001}`, RDP, is also accepted: one is how the password was found, the other how it was used.)
 
 I first filtered on RDP logons (type 10) and only found my own `labuser` test, which was rejected. Listing every local account on the workstation showed `helpdesk` with a fresh `LastLogon`. In Sentinel, every `helpdesk` logon comes from one source, `10.50.0.100`, while all my own connections come from the gateway `10.50.0.1`. Queries: `queries.kql`, "Part 2".
 
@@ -49,13 +49,13 @@ The account was never locked: the attempt after five failures still worked each 
 
 I confirmed the logon in two places: the workstation's own Security log (PowerShell) and Sentinel (KQL). The case rests on Sentinel, because the mission asks for it and because events there can't be wiped by someone who gets admin on the machine. The local log is a cross-check.
 
-| Field | Workstation | Sentinel | Same? |
+| Question | PowerShell (workstation) | KQL (Sentinel) | What the comparison means |
 |---|---|---|---|
-| Account | `helpdesk` (`Get-LocalUser`) | `helpdesk` | Yes |
-| Logon time (UTC) | `LastLogon` 12:49:55 | Round 2, 12:49:52 → 12:49:56 | Yes |
-| Source IP | Not shown by `Get-LocalUser` | `10.50.0.100` | Only in the SIEM |
+| Which account? | `Get-LocalUser`: `helpdesk`, last logon 12:49:55 | 20 failed + 4 successful logons for `helpdesk` | Agree. Listing existing accounts found it; the SIEM explained it |
+| From where? | `Get-WinEvent` 4624 type 10: 4 sessions from `10.50.0.100` | Same 4 sessions, same IP, same second | Agree exactly: nothing lost between the machine and the SIEM |
+| What kind of attack? | 4625s with SubStatus `0xc000006a` (wrong password) | Failures and successes in one timeline, 80 ms apart | Complete each other: the reason from one, the shape from the other |
 
-What the comparison shows: the workstation tells me *that* `helpdesk` logged on and when it last did, but not from where, how often, or how many attempts failed first. The SIEM has the whole story: 20 failed logons, 4 successful logins (each one a type 3 plus a type 10 event), one source. For the hunt itself, Sentinel was the better tool. The full comparison of the two methods is in `notes.md`.
+In short: every answer was the same in both places, which shows my collection works for logon events. PowerShell needs XML parsing by hand and only sees one machine; Sentinel answers the same question in a few lines, keeps every attempt, and can't be wiped by someone with admin rights on the machine. The full comparison of the two methods is in `notes.md`.
 
 ## MITRE ATT&CK mapping
 
