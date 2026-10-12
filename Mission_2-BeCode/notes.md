@@ -182,7 +182,21 @@ Get-WinEvent -LogName Security -FilterXPath "*[System[(EventID=4624)] and EventD
 
 4. Compare the two lists with what I know is mine (`mustafa`, and `labuser` from Part 1). The account left over is `helpdesk`, which I had already noted in Mission 1 as "from an earlier lab setup".
 
-TODO: the `LastLogon` of `helpdesk` from step 2, and whether it showed up in step 3. If it **didn't** show up as type 10, the intruder didn't open an RDP desktop session: they logged on another way (for example a network logon, type 3). That would also explain why my first query, filtered on type 10, only found `labuser`.
+Output of step 2 (times are VM local, UTC+2):
+
+| Name | Enabled | LastLogon (local) | LastLogon (UTC) |
+|---|---|---|---|
+| Administrator | False | | |
+| becode | True | never | |
+| DefaultAccount | False | | |
+| Guest | False | | |
+| **helpdesk** | **True** | **12-10-26 14:49:55** | **12 Oct 12:49:55** |
+| labuser | True | 12-10-26 12:11:33 | 12 Oct 10:11:33 (my Part 1 logon) |
+| WDAGUtilityAccount | False | | |
+
+`helpdesk` logged on at 12:49:55 UTC today, about two and a half hours after my `labuser` test, and I didn't do it. That's the intrusion, and it gives me the time to centre the SIEM search on. (`becode` is enabled but has never logged on.)
+
+TODO: whether `helpdesk` showed up in step 3. If it **didn't** show up as type 10, the intruder didn't open an RDP desktop session: they logged on another way (for example a network logon, type 3). That would also explain why my first query, filtered on type 10, only found `labuser`.
 
 **Instructions (in the SIEM):** TODO: confirm `helpdesk` in Sentinel (query "Part 2: everything about the compromised account" in `queries.kql`): the 4625s and the 4624, their logon type, time and source IP. The case file needs the SIEM evidence, not only the workstation.
 
