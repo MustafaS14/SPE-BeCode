@@ -8,7 +8,7 @@ My notes from Mission 2 of the BeCode Hamilton CTF. I play attacker on my own ma
 |---|---|
 | Workstation | WKS-L58 (WKS-L58.hamilton.corp) |
 | SIEM | My Sentinel workspace from Mission 1 (`SecurityEvent` through `dcr-securityevents`, "Common" set) |
-| Attack window (given by the coach) | TODO: start → end, in UTC |
+| Attack window (from my own SIEM) | 12 October 2026, 12:39:57 → 13:12:32 UTC (four rounds, see Part 2) |
 | Lab account for Part 1 | `labuser`, a local account on WKS-L58 (password sent privately by the coach, not written here) |
 
 ---
@@ -128,12 +128,18 @@ One limit for Part 2: the source IP is the lab gateway (`10.50.0.1`) for my conn
 
 ## KQL warm-up
 
-The coach's warm-up builds the queries for the hunt step by step, on events I created myself. All queries are in `queries.kql`.
+The coach's warm-up builds the hunting queries step by step on events you create yourself (three wrong passwords for `labuser`, then the right one). I already learned these basics in Mission 1, so I didn't redo it. What it covers, for reference:
 
-**Step 0: make known events.** RDP to my own machine as `.\labuser`: a wrong password three times, then the right one, then sign out.
+| Step | What it teaches |
+|---|---|
+| 1–3 | A query starts from a table (`SecurityEvent`), `where TimeGenerated > ago(24h)` cuts by time, `project` keeps the columns you want |
+| 4 | Filter on `TargetUserName`, not `Account`: a failed logon writes `.\labuser`, a successful one `WKS-L58\labuser`, and a `\` inside quotes breaks the query |
+| 5 | 4624 = logon succeeded, 4625 = logon failed. One wrong attempt can produce more than one 4625 |
+| 6 | `summarize count() by EventID, IpAddress` shows shapes instead of rows |
+| 7 | Sorted in time, a run of 4625s followed by a 4624 is what password guessing looks like |
+| 8 | One RDP login = two 4624s about a second apart: type 3 (network authentication, NLA) then type 10 (the desktop session) |
 
-| Step | What I learned | What I saw |
-|---|---|---|
+---|---|---|
 | 1 | A query can be just a table name (`SecurityEvent`). It returns a sample of 1000 rows, not in time order | TODO |
 | 2 | `where TimeGenerated > ago(24h)` cuts by time | TODO |
 | 3 | `project` keeps only the columns I want | TODO |
@@ -196,9 +202,39 @@ Output of step 2 (times are VM local, UTC+2):
 
 `helpdesk` logged on at 12:49:55 UTC today, about two and a half hours after my `labuser` test, and I didn't do it. That's the intrusion, and it gives me the time to centre the SIEM search on. (`becode` is enabled but has never logged on.)
 
-TODO: whether `helpdesk` showed up in step 3. If it **didn't** show up as type 10, the intruder didn't open an RDP desktop session: they logged on another way (for example a network logon, type 3). That would also explain why my first query, filtered on type 10, only found `labuser`.
+Why my earlier type 10 listing only showed `labuser` and `mustafa`: I ran it at about 12:24 UTC, and the intrusion started at 12:39:57 UTC. It hadn't happened yet. The intruder *did* open RDP sessions (see below).
 
-**Instructions (in the SIEM):** TODO: confirm `helpdesk` in Sentinel (query "Part 2: everything about the compromised account" in `queries.kql`): the 4625s and the 4624, their logon type, time and source IP. The case file needs the SIEM evidence, not only the workstation.
+**Instructions (in the SIEM):**
+1. Summarise every logon of `helpdesk` by logon type and source:
+
+```kql
+SecurityEvent
+| where TimeGenerated > ago(48h)
+| where TargetUserName == "helpdesk"
+| where EventID in (4624, 4625)
+| summarize Fail = countif(EventID == 4625), OK = countif(EventID == 4624),
+            First = min(TimeGenerated), Last = max(TimeGenerated)
+            by LogonType, IpAddress, WorkstationName
+```
+
+| LogonType | IpAddress | WorkstationName | Fail | OK | First (UTC) | Last (UTC) |
+|---|---|---|---|---|---|---|
+| 3 | 10.50.0.100 | WKSTN-07 | 20 | 4 | 12:39:57.465 | 13:12:31.034 |
+| 10 | 10.50.0.100 | WKS-L58 | 0 | 4 | 12:40:01.480 | 13:12:32.657 |
+
+2. Break it down per minute to see the rounds (query "Part 2: helpdesk rounds per minute" in `queries.kql`):
+
+| Minute starting (UTC) | Failed (4625) | Success type 3 | Success type 10 |
+|---|---|---|---|
+| 12:39:57 | 5 | 1 | 0 |
+| 12:40:01 | 0 | 0 | 1 |
+| 12:49:52 | 5 | 1 | 1 |
+| 13:05:48 | 5 | 1 | 1 |
+| 13:12:28 | 5 | 1 | 1 |
+
+The first five failures of round 1 are at 12:39:57.465, .547, .625, .705 and .787, about 80 ms apart. No person types five passwords in a third of a second: it's a script.
+
+**Workstation vs SIEM:** the workstation's `LastLogon` for `helpdesk` (12:49:55 UTC) falls inside round 2 in the SIEM, so both sources agree. I ran `Get-LocalUser` between round 2 and round 3, which is why it shows round 2 and not the last one.
 
 **Lesson:** filtering too early hides the answer. In Mission 1 it was filtering on an Event ID I already expected. Here it was filtering on logon type 10 because I assumed the intruder used RDP. Listing *all* accounts first, then narrowing down, found it.
 
@@ -212,7 +248,9 @@ TODO: whether `helpdesk` showed up in step 3. If it **didn't** show up as type 1
 1. Expand the successful 4624 found in challenge 1 and read `IpAddress` (and `WorkstationName`).
 2. Check it isn't my own address from Part 1.
 
-**Answer:** TODO → `HAM{a.b.c.d}`
+From the summary above: every `helpdesk` logon, failed or successful, comes from **`10.50.0.100`**, a machine called **WKSTN-07**. That's not my address: my own connections all come through the lab gateway (`10.50.0.1`). On the type 10 events, `WorkstationName` shows WKS-L58 (my machine, where the session opens), so the source machine's name is read from the type 3 events.
+
+**Answer:** `HAM{10.50.0.100}` (TODO: submit)
 
 ### 3. M2: Attack technique
 
@@ -220,9 +258,10 @@ TODO: whether `helpdesk` showed up in step 3. If it **didn't** show up as type 1
 
 **Instructions:**
 1. Put the failures and the success for that account in time order (query "Part 2: the shape over time").
-2. TODO: describe the shape (how many failures, over how long, then the success, and the logon type).
+2. The shape: in each round, **5 failed logons in about a third of a second**, then a success. The success is a type 3 (the network authentication RDP does first, NLA) followed by a type 10 (the desktop session). Same account, same source, four rounds between 12:39:57 and 13:12:32 UTC.
+3. Many wrong passwords against one account, fired by a script, until one works: that's password guessing, a form of **brute force** (MITRE ATT&CK T1110, sub-technique T1110.001 *Password Guessing*). It isn't password spraying, which tries one password against many accounts.
 
-**Answer:** TODO → `HAM{...}`
+**Answer:** `HAM{brute_force}` or `HAM{T1110}` (TODO: submit)
 
 ### 4. M2: Proof of access (category Mission 2 · Attack)
 

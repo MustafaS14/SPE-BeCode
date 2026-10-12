@@ -58,6 +58,27 @@ SecurityEvent
 | project TimeGenerated, EventID, Activity, LogonType, LogonTypeName, IpAddress, WorkstationName, Status, SubStatus
 | sort by TimeGenerated asc
 
+// Part 2: helpdesk summary by logon type and source (this gave the source IP)
+SecurityEvent
+| where TimeGenerated > ago(48h)
+| where TargetUserName == "helpdesk"
+| where EventID in (4624, 4625)
+| summarize Fail = countif(EventID == 4625), OK = countif(EventID == 4624),
+            First = min(TimeGenerated), Last = max(TimeGenerated)
+            by LogonType, IpAddress, WorkstationName
+
+// Part 2: helpdesk rounds per minute (this showed the 4 rounds of 5 failures, then success)
+SecurityEvent
+| where TimeGenerated > ago(48h)
+| where TargetUserName == "helpdesk"
+| where EventID in (4624, 4625)
+| summarize Failed = countif(EventID == 4625),
+            OK_type3 = countif(EventID == 4624 and LogonType == 3),
+            OK_type10 = countif(EventID == 4624 and LogonType == 10),
+            Start = min(TimeGenerated)
+            by bin(TimeGenerated, 1m)
+| sort by Start asc
+
 // Who was knocking? Failed and successful logons per account and source, excluding machine accounts
 let windowStart = datetime(2026-10-12 00:00);   // TODO: attack window start (UTC)
 let windowEnd   = datetime(2026-10-12 23:59);   // TODO: attack window end (UTC)
