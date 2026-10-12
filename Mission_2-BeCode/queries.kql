@@ -1,0 +1,115 @@
+// Mission 02: the KQL I ran in Sentinel → Logs
+// Times in UTC. Replace the attack window below with the one the coach gave me.
+
+// Is my machine still sending? (check before trusting "nothing found")
+Heartbeat
+| where Computer startswith "WKS-L58"
+| summarize LastSeen = max(TimeGenerated)
+
+// ---------------------------------------------------------------------------
+// KQL warm-up (on my own labuser events from step 0)
+// ---------------------------------------------------------------------------
+
+// Step 4: only my labuser events (filter on TargetUserName, not Account)
+SecurityEvent
+| where TimeGenerated > ago(24h)
+| where TargetUserName == "labuser"
+| project TimeGenerated, Account, IpAddress, EventID, Activity
+
+// Step 6: failures vs successes, and from where
+SecurityEvent
+| where TimeGenerated > ago(24h)
+| where TargetUserName == "labuser"
+| where EventID in (4624, 4625)
+| summarize Attempts = count() by EventID, IpAddress
+| sort by Attempts desc
+
+// Step 7: the story in time order (failures, then the success)
+SecurityEvent
+| where TimeGenerated > ago(24h)
+| where TargetUserName == "labuser"
+| where EventID in (4624, 4625)
+| sort by TimeGenerated asc
+| project TimeGenerated, EventID, IpAddress, LogonType
+
+// Part 1: everything my labuser session left behind (logon, sign-out, and whether whoami shows up at all)
+SecurityEvent
+| where TimeGenerated > ago(24h)
+| where TargetUserName == "labuser" or SubjectUserName == "labuser"
+| summarize count() by EventID, Activity
+| order by EventID asc
+
+// ---------------------------------------------------------------------------
+// Part 2: hunt (Temps 1)
+// ---------------------------------------------------------------------------
+
+// Every successful RDP logon, newest first (this is how I found the compromised account)
+SecurityEvent
+| where EventID == 4624
+| where LogonType == 10
+| project TimeGenerated, Computer, TargetUserName, IpAddress, LogonTypeName, Activity
+| sort by TimeGenerated desc
+
+// Who was knocking? Failed and successful logons per account and source, excluding machine accounts
+let windowStart = datetime(2026-10-12 00:00);   // TODO: attack window start (UTC)
+let windowEnd   = datetime(2026-10-12 23:59);   // TODO: attack window end (UTC)
+SecurityEvent
+| where TimeGenerated between (windowStart .. windowEnd)
+| where EventID in (4624, 4625)
+| where TargetUserName !endswith "$" and TargetUserName !in ("SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE", "ANONYMOUS LOGON")
+| summarize Failures = countif(EventID == 4625), Successes = countif(EventID == 4624),
+            First = min(TimeGenerated), Last = max(TimeGenerated)
+            by TargetUserName, IpAddress, WorkstationName
+| sort by Failures desc
+
+// The shape over time for one account (replace the name with the one from the query above)
+SecurityEvent
+| where TimeGenerated > ago(7d)
+| where TargetUserName == "TODO_account"
+| where EventID in (4624, 4625)
+| sort by TimeGenerated asc
+| project TimeGenerated, EventID, LogonType, IpAddress, WorkstationName, Status, SubStatus
+
+// Failures per minute: a burst is the "shape" of password guessing
+SecurityEvent
+| where TimeGenerated > ago(7d)
+| where EventID == 4625
+| summarize Failures = count() by bin(TimeGenerated, 1m), TargetUserName, IpAddress
+| where Failures > 5
+| sort by TimeGenerated asc
+
+// The successful logon in full (expand the row: TargetUserName, IpAddress, LogonType, WorkstationName)
+SecurityEvent
+| where TimeGenerated > ago(7d)
+| where TargetUserName == "TODO_account"
+| where EventID == 4624
+
+// ---------------------------------------------------------------------------
+// Part 3: the gap
+// ---------------------------------------------------------------------------
+
+// Is there anything that shows a command? (expected empty in Temps 1: no process creation auditing)
+SecurityEvent
+| where TimeGenerated > ago(7d)
+| where EventID == 4688
+| take 10
+
+// ---------------------------------------------------------------------------
+// Part 4: after the policy change (Temps 2)
+// ---------------------------------------------------------------------------
+
+// What's new since the policy change? Event IDs seen after it that never appeared before
+let policyChange = datetime(2026-10-12 00:00);   // TODO: time the policy was switched on (UTC)
+let before = SecurityEvent | where TimeGenerated between (ago(30d) .. policyChange) | distinct EventID;
+SecurityEvent
+| where TimeGenerated > policyChange
+| where EventID !in (before)
+| summarize Count = count(), Example = any(Activity) by EventID
+
+// Process creation with the command line, for the intruder's account (4688 only exists once the policy is on)
+SecurityEvent
+| where TimeGenerated > ago(7d)
+| where EventID == 4688
+| where SubjectUserName == "TODO_account"
+| project TimeGenerated, SubjectUserName, NewProcessName, CommandLine, ParentProcessName
+| sort by TimeGenerated asc
