@@ -138,6 +138,17 @@ SecurityEvent
 | where EventID == 4688
 | take 10
 
+// Part 3: is there any 4688 or 4104 at all? (both 0 over 7 days in Temps 1)
+union (SecurityEvent | where TimeGenerated > ago(7d) | where EventID == 4688 | summarize n = count() | extend t = "4688 last 7d"),
+      (Event | where TimeGenerated > ago(7d) | where EventID == 4104 | summarize n = count() | extend t = "4104 last 7d")
+
+// Part 3: helpdesk activity around flag.txt (created 13:13:01 UTC)
+SecurityEvent
+| where TimeGenerated between (datetime(2026-10-12 13:10) .. datetime(2026-10-12 13:20))
+| where TargetUserName == "helpdesk" or SubjectUserName == "helpdesk"
+| summarize Count = count(), FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated) by EventID, Activity
+| sort by FirstSeen asc
+
 // ---------------------------------------------------------------------------
 // Part 4: after the policy change (Temps 2)
 // ---------------------------------------------------------------------------

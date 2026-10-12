@@ -345,9 +345,58 @@ What it signifies: here the two sources complete each other. The workstation gav
 
 **Question:** The intruder left proof that they reached your workstation. Recover it.
 
-**Instructions:** TODO
+**Instructions:**
+1. Open PowerShell as administrator on the workstation.
+2. First try: list everything in the `helpdesk` profile:
 
-**Answer:** TODO
+```powershell
+Get-ChildItem -Path "C:\Users\helpdesk" -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName, CreationTime
+```
+
+Far too much: hundreds of Edge cache and `AppData` files.
+
+3. Narrow it down to text files only:
+
+```powershell
+Get-ChildItem -Path "C:\Users\helpdesk" -Filter "*.txt" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName, CreationTime
+```
+
+| FullName | CreationTime (VM local) | UTC |
+|---|---|---|
+| C:\Users\helpdesk\Desktop\flag.txt | 12-10-26 15:13:01 | 13:13:01 |
+
+4. Read it:
+
+```powershell
+Get-Content -Path "C:\Users\helpdesk\Desktop\flag.txt"
+```
+
+It prints the flag.
+
+5. In Sentinel, look for the command that wrote the file: process creation (4688) and PowerShell script blocks (4104). My first try used 15:10–15:20, which is VM local time, but `TimeGenerated` is UTC (13:10–13:20). It doesn't matter here, though: over the last 7 days there are **0** of either (query "Part 3: is there any 4688 or 4104 at all?" in `queries.kql`).
+6. Look at what Sentinel *does* have for `helpdesk` between 13:10 and 13:20 UTC (query "Part 3: helpdesk activity around flag.txt"):
+
+| Time (UTC) | EventID | Count | What it is |
+|---|---|---|---|
+| 13:11:36 | 4798 | 1 | A user's local group membership was enumerated (during the round 3 session) |
+| 13:12:28 | 4625 | 5 | Failed logon (round 4) |
+| 13:12:31 → 13:12:32 | 4624 | 2 | Successful logon (type 3, then type 10) |
+| 13:12:32 | 4648 | 1 | A logon was attempted using explicit credentials |
+| 13:12:35 | 5059 | 3 | Key migration operation |
+| **13:13:01 → 13:13:02** | **4799** | **10** | **A security-enabled local group membership was enumerated** |
+| 13:13:21 | 4634 | 1 | Logged off |
+
+**Answer:** `HAM{rdp_pwned_seat58}` (accepted)
+
+**PowerShell vs SIEM**
+
+| | PowerShell (workstation) | KQL (Sentinel) |
+|---|---|---|
+| Code | `Get-ChildItem` on the `helpdesk` profile, filtered on `*.txt`, then `Get-Content` | `SecurityEvent` for 4688, `Event` for 4104, then everything about `helpdesk` in the window |
+| What it shows | The file itself, its content (the flag) and its creation time, 13:13:01 UTC | No file and no command. Only the session around it: logon at 13:12:31, ten 4799 events at 13:13:01, logoff at 13:13:21 |
+| Agree? | The times line up: the file was created in the same second as the burst of 4799s, inside the round 4 session | |
+
+What it signifies: this is the first challenge only the workstation could answer. The SIEM proves *someone was active as `helpdesk`* at the exact moment the file appeared, but not *what they did*. File creation isn't audited, process creation (4688) isn't audited, and the PowerShell log isn't collected. The intruder was in for about 50 seconds (logon 13:12:31, file 13:13:01, logoff 13:13:21), and all the SIEM can say about those 50 seconds is "some group lookups happened". That's exactly the gap Part 3 is about.
 
 ---
 
@@ -360,10 +409,10 @@ What it signifies: here the two sources complete each other. The workstation gav
 **Question:** What command did the attacker run once inside? Answer from Sentinel, then write in one or two sentences why the monitoring could see the login but not the action.
 
 **Instructions:**
-1. In Sentinel, look for process creation events (4688) in the attack window (query "Part 3" in `queries.kql`).
-2. TODO: what I found.
+1. In Sentinel, count the process creation events (4688) and PowerShell script block events (4104) over the last 7 days (query "Part 3: is there any 4688 or 4104 at all?" in `queries.kql`). Both are **0**.
+2. Look at what Sentinel has for `helpdesk` while the intruder was in (challenge 5, step 6): logons, logoff and group lookups, but nothing that names a program or a command.
 
-**Answer:** TODO (expected: the command isn't in Sentinel). Why, in my own words: TODO. Starting point: logons are audited by default and the "Common" set collects 4624/4625, but process creation (4688) isn't audited on WKS-L58 and Sysmon isn't installed, so a command leaves no Security event to collect. Same gap as Mission 1, where `qemu-ga` wrote files and nothing in `SecurityEvent` showed which program did it.
+**Answer:** the command can't be found in Sentinel. Why: logons are audited by default and the "Common" set collects 4624/4625, so the SIEM sees the door open and close. But process creation (4688) isn't audited on WKS-L58, Sysmon isn't installed, and the PowerShell log isn't collected, so a command leaves no event to send. Same gap as Mission 1, where `qemu-ga` wrote files and nothing in `SecurityEvent` showed which program did it. TODO: confirm the command in Part 4, after the policy change.
 
 ---
 

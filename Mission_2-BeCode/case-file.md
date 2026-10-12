@@ -6,14 +6,14 @@ This is the hand-in for Mission 2. It's written so a teammate can follow what ha
 
 ## Summary
 
-On 12 October 2026 between 12:39 and 13:12 UTC, someone at `10.50.0.100` (WKSTN-07) brute-forced the local account `helpdesk` on my workstation WKS-L58: five wrong passwords in a third of a second, then a success, four times. Each success opened a Remote Desktop session. My Sentinel saw every failed and successful logon. TODO: what they did once inside, and what my monitoring missed.
+On 12 October 2026 between 12:39 and 13:13 UTC, someone at `10.50.0.100` (WKSTN-07) brute-forced the local account `helpdesk` on my workstation WKS-L58: five wrong passwords in a third of a second, then a success, four times. Each success opened a Remote Desktop session. In the last one they left `flag.txt` on the `helpdesk` Desktop (13:13:01) and signed out 20 seconds later. My Sentinel saw every failed and successful logon, but not the file or the command that wrote it: process creation isn't audited.
 
 ## Scope
 
 | | |
 |---|---|
 | Machine | WKS-L58.hamilton.corp |
-| Attack window | 12 October 2026, 12:39:57 → 13:12:32 UTC |
+| Attack window | 12 October 2026, 12:39:57 → 13:13:21 UTC |
 | Evidence source | My Sentinel workspace (`SecurityEvent`), plus the workstation itself where noted |
 | My own activity | Part 1 `labuser` logon at 10:11:33 UTC from `10.50.0.1` (the lab gateway), before the attack and from a different address |
 
@@ -26,9 +26,10 @@ On 12 October 2026 between 12:39 and 13:12 UTC, someone at `10.50.0.100` (WKSTN-
 | 12:49:52 | Round 2: same pattern (5 failures, success, session) | 5 × 4625, 4624 type 3 + type 10 |
 | 13:05:48 | Round 3: same pattern | 5 × 4625, 4624 type 3 + type 10 |
 | 13:12:28 → 13:12:32 | Round 4: same pattern, last session at 13:12:32.657 | 5 × 4625, 4624 type 3 + type 10 |
-| TODO | Command run once inside | Not visible in Temps 1. 4688 in Temps 2 |
-| TODO | Proof of access left on the machine | TODO |
-| TODO | Sign-out / disconnect | 4634 / 4647 |
+| 13:11:36 | During the round 3 session: a user's local group membership is enumerated | 4798 |
+| 13:13:01 | `flag.txt` created on the `helpdesk` Desktop: the proof of access (`HAM{rdp_pwned_seat58}`) | Workstation only (file creation time). Sentinel: 10 × 4799 (group membership enumerated) in the same second, no file or process event |
+| 13:13:21 | `helpdesk` logs off | 4634 |
+| TODO | Command run once inside | Not visible in Temps 1 (0 × 4688). TODO in Temps 2 |
 
 ## Findings
 
@@ -54,8 +55,9 @@ I confirmed the logon in two places: the workstation's own Security log (PowerSh
 | Which account? | `Get-LocalUser`: `helpdesk`, last logon 12:49:55 | 20 failed + 4 successful logons for `helpdesk` | Agree. Listing existing accounts found it; the SIEM explained it |
 | From where? | `Get-WinEvent` 4624 type 10: 4 sessions from `10.50.0.100` | Same 4 sessions, same IP, same second | Agree exactly: nothing lost between the machine and the SIEM |
 | What kind of attack? | 4625s with SubStatus `0xc000006a` (wrong password) | Failures and successes in one timeline, 80 ms apart | Complete each other: the reason from one, the shape from the other |
+| What did they leave? | `Get-ChildItem` / `Get-Content`: `flag.txt`, created 13:13:01, with the flag | No file or command (0 × 4688, 0 × 4104), only 10 × 4799 at 13:13:01 | Only the workstation could answer. The SIEM shows *when* the intruder acted, not *what* they did |
 
-In short: every answer was the same in both places, which shows my collection works for logon events. PowerShell needs XML parsing by hand and only sees one machine; Sentinel answers the same question in a few lines, keeps every attempt, and can't be wiped by someone with admin rights on the machine. The full comparison of the two methods is in `notes.md`.
+In short: every logon answer was the same in both places, which shows my collection works for logon events. What happened *inside* the session is only on the workstation. PowerShell needs XML parsing by hand and only sees one machine; Sentinel answers the same question in a few lines, keeps every attempt, and can't be wiped by someone with admin rights on the machine. The full comparison of the two methods is in `notes.md`.
 
 ## MITRE ATT&CK mapping
 
@@ -70,8 +72,8 @@ In short: every answer was the same in both places, which shows my collection wo
 
 | | Temps 1 (default logging) | Temps 2 (after the policy) |
 |---|---|---|
-| Failed and successful logons | TODO | TODO |
-| The command the attacker ran | TODO | TODO |
+| Failed and successful logons | All of them: 20 × 4625, 4 × 4624 type 3 + type 10, source IP | TODO |
+| The command the attacker ran | Not visible: 0 × 4688, 0 × 4104. Only side effects like 10 × 4799 at 13:13:01 | TODO |
 | Why | TODO | TODO |
 
 TODO: one paragraph. What default logging missed, what the policy made visible, and what that means for what a SIEM can and can't tell you.
