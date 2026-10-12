@@ -28,7 +28,7 @@ My notes from Mission 2 of the BeCode Hamilton CTF. I play attacker on my own ma
 4. Sign out from the Start menu (not just closing the window, which only disconnects the session).
 5. Wait two minutes, then look for the logon in Sentinel (see the warm-up below).
 
-**What it left behind:** TODO: the time of my labuser logon and the events I found (expected: a 4624 type 3 then a type 10 for the logon, a 4634/4647 for the sign-out, and **nothing** for `whoami`, because process creation isn't audited).
+**What it left behind:** the logon is at 12 October, 10:11:33 UTC, from `10.50.0.1` (details below). TODO: the other events I found (expected: a 4624 type 3 then a type 10 for the logon, a 4634/4647 for the sign-out, and **nothing** for `whoami`, because process creation isn't audited).
 
 **Finding my labuser logon, two ways**
 
@@ -49,6 +49,29 @@ $event = Get-WinEvent -LogName Security -FilterXPath "*[System[EventID=4624] and
 $xml.Event.EventData.Data | Where-Object Name -eq 'TargetUserName' | Select-Object -ExpandProperty '#text'
 ```
 
+It returns `labuser`.
+
+4. Because `-MaxEvents 1` only shows the newest one (see the trap below), list **every** type 10 logon with its time, account and source IP:
+
+```powershell
+Get-WinEvent -LogName Security -FilterXPath "*[System[(EventID=4624)] and EventData[Data[@Name='LogonType']='10']]" | ForEach-Object {
+    [xml]$xml = $_.ToXml()
+    [PSCustomObject]@{
+        TimeCreated = $_.TimeCreated
+        UserName    = ($xml.Event.EventData.Data | Where-Object Name -eq 'TargetUserName').'#text'
+        ClientIP    = ($xml.Event.EventData.Data | Where-Object Name -eq 'IpAddress').'#text'
+    }
+} | Format-Table -AutoSize
+```
+
+| TimeCreated (VM local, UTC+2) | UTC | UserName | ClientIP |
+|---|---|---|---|
+| 12-10-26 12:11:33 | 12 Oct 10:11:33 | labuser | 10.50.0.1 |
+| 07-10-26 11:38:29 | 7 Oct 09:38:29 | mustafa | 10.50.0.1 |
+| 07-10-26 11:38:29 | 7 Oct 09:38:29 | mustafa | 10.50.0.1 |
+
+The two `mustafa` rows are my very first RDP connection from Mission 1 (the type 10 the coach asked about). `labuser` has only **one** row where `mustafa` has two: my account is an admin, so Windows logs a second logon for the elevated half of its split token, while `labuser` is a standard user.
+
 *Method B: in the SIEM*
 1. In Sentinel → Logs, list every successful RDP logon, newest first:
 
@@ -60,7 +83,13 @@ SecurityEvent
 | sort by TimeGenerated desc
 ```
 
-2. Find the `labuser` row(s). TODO: time, `IpAddress` (my own address, through the lab gateway?) and how many rows one logon produced.
+2. Over the last 7 days it returns exactly **one** row:
+
+| TimeGenerated (UTC) | Computer | TargetUserName | IpAddress | LogonTypeName |
+|---|---|---|---|---|
+| 12/10/2026 10:11:33.554 | WKS-L58.hamilton.corp | labuser | 10.50.0.1 | 10 - RemoteInteractive |
+
+The source IP is `10.50.0.1`, the lab gateway, not my laptop. All my RDP connections show that address, because the gateway relays them.
 
 **Comparing the two methods**
 
@@ -79,18 +108,21 @@ As in Mission 1, comparing the two sources shows what each one can and can't be 
 | Seeing the whole picture | Hard. `-MaxEvents 1` only gives the newest logon, and counting failures needs another script | Easy. Time range, sort, `summarize` the 4625s and 4624s, and the same query works across several machines |
 | Allowed for the flag? | Only as a cross-check. The briefing says "using only your own Sentinel" | Yes, this is the evidence |
 
-**A trap in the PowerShell method:** `-MaxEvents 1` returns the *newest* type 10 logon, whoever it belongs to. Right after my `labuser` test that's my own logon, so it works here. But in Part 2, if I (or anyone) sign in after the attack, it returns that logon instead of the intruder's. The local result only counts if its time and source IP fall where I expect them, so I always check both.
+**A trap in the PowerShell method:** `-MaxEvents 1` returns the *newest* type 10 logon, whoever it belongs to. Right after my `labuser` test that's my own logon, so it works here. But in Part 2, if I (or anyone) sign in after the attack, it returns that logon instead of the intruder's. The local result only counts if its time and source IP fall where I expect them, so I always check both, and step 4 lists every logon instead of trusting the newest.
 
 **Do both sources agree?**
 
 | Field | Workstation | SIEM | Same? |
 |---|---|---|---|
-| Account (`TargetUserName`) | TODO | TODO | TODO |
-| Time of the logon | TODO (local time → UTC) | TODO (UTC) | TODO |
-| Source IP (`IpAddress`) | TODO | TODO | TODO |
-| Logon type | 10 | 10 | Yes, both queries filter on it |
+| Account (`TargetUserName`) | labuser | labuser | Yes |
+| Time of the logon | 12-10-26 12:11:33 local = 10:11:33 UTC | 10:11:33.554 UTC | Yes, same second |
+| Source IP (`IpAddress`) | 10.50.0.1 | 10.50.0.1 | Yes |
+| Logon type | 10 | 10 (RemoteInteractive) | Yes |
+| Other type 10 logons | 2 × `mustafa` on 7 Oct, 09:38:29 UTC | None | No, and that's expected |
 
-TODO: one or two sentences. If they match, the SIEM saw my logon exactly as the machine did, and I can trust it for the hunt. If not, why (delay, a filtered event, the daily cap).
+For my `labuser` logon both sources agree to the second, so the SIEM saw it exactly as the machine did, and I can trust it for the hunt. The difference is the history: the workstation still has my first `mustafa` logon from 7 October, but the SIEM doesn't. That logon happened at 09:38 UTC, before `SecurityEvent` started collecting (~15:08 UTC). Same lesson as Mission 1: the SIEM only knows what happened after collection started.
+
+One limit for Part 2: the source IP is the lab gateway (`10.50.0.1`) for my connections. If the intruder also came in through the gateway, the IP alone won't tell us apart. The account and the shape of the attempts will.
 
 ---
 
