@@ -1,0 +1,83 @@
+# Microsoft Sentinel scheduled analytics rule (Azure-Sentinel template format)
+# Built from Mission 01, step 6: svc_backup created (4720) and added to Administrators (4732) within 80 ms.
+id: 1999e8f9-9733-4334-a26a-ca747b37cdf8
+name: New local account added to a privileged local group
+description: |
+  A local user account was created (4720) and, within 10 minutes on the same computer,
+  the same SID was added to a privileged built-in local group (4732): Administrators,
+  Remote Desktop Users, Remote Management Users or Distributed COM Users.
+  Typical persistence step: a fresh local admin that looks like a service account.
+severity: High
+status: Available
+requiredDataConnectors:
+  - connectorId: WindowsSecurityEvents
+    dataTypes:
+      - SecurityEvent
+queryFrequency: 10m
+queryPeriod: 30m
+triggerOperator: gt
+triggerThreshold: 0
+tactics:
+  - Persistence
+  - PrivilegeEscalation
+relevantTechniques:
+  - T1136.001
+  - T1098
+query: |
+  let window = 10m;
+  let PrivilegedLocalGroups = dynamic([
+      "S-1-5-32-544",   // Administrators
+      "S-1-5-32-555",   // Remote Desktop Users
+      "S-1-5-32-580",   // Remote Management Users (WinRM)
+      "S-1-5-32-562"    // Distributed COM Users
+  ]);
+  let Created = SecurityEvent
+      | where EventID == 4720
+      | project CreatedTime = TimeGenerated, Computer,
+                NewAccountSid = TargetSid,
+                NewAccount = strcat(TargetDomainName, "\\", TargetUserName),
+                CreatedBy = SubjectAccount;
+  let AddedToGroup = SecurityEvent
+      | where EventID == 4732 and TargetSid in (PrivilegedLocalGroups)
+      | project AddedTime = TimeGenerated, Computer, MemberSid,
+                Group = strcat(TargetDomainName, "\\", TargetUserName),
+                AddedBy = SubjectAccount;
+  Created
+  | join kind=inner AddedToGroup
+      on $left.Computer == $right.Computer, $left.NewAccountSid == $right.MemberSid
+  | where AddedTime between ((CreatedTime - 5s) .. (CreatedTime + window))
+  | extend SecondsBetween = datetime_diff('millisecond', AddedTime, CreatedTime) / 1000.0
+  | project CreatedTime, AddedTime, SecondsBetween, Computer, NewAccount,
+            NewAccountSid, Group, CreatedBy, AddedBy
+entityMappings:
+  - entityType: Account
+    fieldMappings:
+      - identifier: FullName
+        columnName: NewAccount
+      - identifier: Sid
+        columnName: NewAccountSid
+  - entityType: Account
+    fieldMappings:
+      - identifier: FullName
+        columnName: CreatedBy
+  - entityType: Host
+    fieldMappings:
+      - identifier: FullName
+        columnName: Computer
+incidentConfiguration:
+  createIncident: true
+  groupingConfiguration:
+    enabled: true
+    reopenClosedIncident: false
+    lookbackDuration: 1h
+    matchingMethod: AllEntities
+customDetails:
+  PrivilegedGroup: Group
+  SecondsBetween: SecondsBetween
+alertDetailsOverride:
+  alertDisplayNameFormat: "New local admin {{NewAccount}} on {{Computer}}"
+  alertDescriptionFormat: "{{NewAccount}} was created by {{CreatedBy}} and added to {{Group}} {{SecondsBetween}} s later."
+version: 1.0.0
+kind: Scheduled
+# Deploy: Sentinel → Analytics → Create → Scheduled query rule, and copy these settings
+# (or import through a Sentinel repository connection). Test procedure: see detection.md.
