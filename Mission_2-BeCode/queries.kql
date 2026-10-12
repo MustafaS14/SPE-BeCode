@@ -79,6 +79,21 @@ SecurityEvent
             by bin(TimeGenerated, 1m)
 | sort by Start asc
 
+// Part 2, challenge 2: every RDP logon of helpdesk, newest first (source IP)
+SecurityEvent
+| where EventID == 4624
+| where LogonType == 10
+| where TargetUserName == "helpdesk"
+| project TimeGenerated, Computer, TargetUserName, IpAddress, LogonTypeName, Activity
+| sort by TimeGenerated desc
+
+// Part 2, challenge 3: everything from the attacker's IP in time order (the brute-force shape)
+SecurityEvent
+| where EventID in (4625, 4624)
+| where IpAddress == "10.50.0.100"
+| project TimeGenerated, EventID, Activity, TargetUserName, IpAddress, LogonType
+| sort by TimeGenerated asc
+
 // Who was knocking? Failed and successful logons per account and source, excluding machine accounts
 let windowStart = datetime(2026-10-12 00:00);   // TODO: attack window start (UTC)
 let windowEnd   = datetime(2026-10-12 23:59);   // TODO: attack window end (UTC)

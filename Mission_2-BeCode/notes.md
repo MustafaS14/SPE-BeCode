@@ -244,24 +244,107 @@ The first five failures of round 1 are at 12:39:57.465, .547, .625, .705 and .78
 
 **Question:** From which IP address did the intrusion come?
 
-**Instructions:**
-1. Expand the successful 4624 found in challenge 1 and read `IpAddress` (and `WorkstationName`).
-2. Check it isn't my own address from Part 1.
+**Instructions (on the workstation):**
+1. Open PowerShell as administrator.
+2. List every RDP logon (4624 type 10) of `helpdesk`, with its time and source IP:
 
-From the summary above: every `helpdesk` logon, failed or successful, comes from **`10.50.0.100`**, a machine called **WKSTN-07**. That's not my address: my own connections all come through the lab gateway (`10.50.0.1`). On the type 10 events, `WorkstationName` shows WKS-L58 (my machine, where the session opens), so the source machine's name is read from the type 3 events.
+```powershell
+Get-WinEvent -LogName Security -FilterXPath "*[System[(EventID=4624)] and EventData[Data[@Name='LogonType']='10']]" | ForEach-Object {
+    [xml]$xml = $_.ToXml()
+    $user = ($xml.Event.EventData.Data | Where-Object Name -eq 'TargetUserName').'#text'
+    if ($user -eq 'helpdesk') {
+        [PSCustomObject]@{
+            TimeCreated = $_.TimeCreated
+            UserName    = $user
+            ClientIP    = ($xml.Event.EventData.Data | Where-Object Name -eq 'IpAddress').'#text'
+        }
+    }
+} | Format-Table -AutoSize
+```
 
-**Answer:** `HAM{10.50.0.100}` (TODO: submit)
+| TimeCreated (VM local, UTC+2) | UTC | UserName | ClientIP |
+|---|---|---|---|
+| 12-10-26 15:12:32 | 13:12:32 | helpdesk | 10.50.0.100 |
+| 12-10-26 15:05:54 | 13:05:54 | helpdesk | 10.50.0.100 |
+| 12-10-26 14:49:55 | 12:49:55 | helpdesk | 10.50.0.100 |
+| 12-10-26 14:40:01 | 12:40:01 | helpdesk | 10.50.0.100 |
+
+**Instructions (in the SIEM):**
+1. List the RDP logons of `helpdesk` in Sentinel, newest first:
+
+```kql
+SecurityEvent
+| where EventID == 4624
+| where LogonType == 10
+| where TargetUserName == "helpdesk"
+| project TimeGenerated, Computer, TargetUserName, IpAddress, LogonTypeName, Activity
+| sort by TimeGenerated desc
+```
+
+2. The summary query from challenge 1 confirms it for the failed logons too: every `helpdesk` logon, failed or successful, comes from **`10.50.0.100`**, a machine called **WKSTN-07**. On the type 10 events, `WorkstationName` shows WKS-L58 (my machine, where the session opens), so the source machine's name is read from the type 3 events.
+
+**Comparison:** both sources give the same four RDP sessions, from the same IP, at the same times (for example 12:40:01 locally and 12:40:01.480 in Sentinel, 13:12:32 and 13:12:32.657). `10.50.0.100` is not my address: my own connections all come through the lab gateway (`10.50.0.1`), as my `labuser` test showed. Here the workstation gives the IP as well, because I read it from the 4624 events instead of from `Get-LocalUser`.
+
+**Answer:** `HAM{10.50.0.100}` (accepted)
 
 ### 3. M2: Attack technique
 
 **Question:** What kind of attack got the intruder in? Name the technique in two words or less (or give the MITRE ATT&CK technique ID).
 
-**Instructions:**
-1. Put the failures and the success for that account in time order (query "Part 2: the shape over time").
-2. The shape: in each round, **5 failed logons in about a third of a second**, then a success. The success is a type 3 (the network authentication RDP does first, NLA) followed by a type 10 (the desktop session). Same account, same source, four rounds between 12:39:57 and 13:12:32 UTC.
-3. Many wrong passwords against one account, fired by a script, until one works: that's password guessing, a form of **brute force** (MITRE ATT&CK T1110, sub-technique T1110.001 *Password Guessing*). It isn't password spraying, which tries one password against many accounts.
+**Instructions (on the workstation):**
+1. Open PowerShell as administrator.
+2. List every failed logon (4625) from `10.50.0.100`, with the account and the `SubStatus` (the reason it failed):
 
-**Answer:** `HAM{brute_force}` or `HAM{T1110}` (TODO: submit)
+```powershell
+Get-WinEvent -LogName Security -FilterXPath "*[System[(EventID=4625)]]" | ForEach-Object {
+    [xml]$xml = $_.ToXml()
+    [PSCustomObject]@{
+        TimeCreated = $_.TimeCreated
+        UserName    = ($xml.Event.EventData.Data | Where-Object Name -eq 'TargetUserName').'#text'
+        ClientIP    = ($xml.Event.EventData.Data | Where-Object Name -eq 'IpAddress').'#text'
+        SubStatus   = ($xml.Event.EventData.Data | Where-Object Name -eq 'SubStatus').'#text'
+    }
+} | Where-Object { $_.ClientIP -eq '10.50.0.100' } | Format-Table -AutoSize
+```
+
+Every row is `helpdesk`, from `10.50.0.100`, with SubStatus **`0xc000006a`**, in groups of five with the same timestamp (for example five at 15:12:28 local and more at 15:05:48).
+
+**Instructions (in the SIEM):**
+1. Put every failed and successful logon from that IP in time order:
+
+```kql
+SecurityEvent
+| where EventID in (4625, 4624)
+| where IpAddress == "10.50.0.100"
+| project TimeGenerated, EventID, Activity, TargetUserName, IpAddress, LogonType
+| sort by TimeGenerated asc
+```
+
+| TimeGenerated (UTC) | EventID | TargetUserName | LogonType |
+|---|---|---|---|
+| 12:39:57.465 | 4625 (failed) | helpdesk | 3 |
+| 12:39:57.547 | 4625 (failed) | helpdesk | 3 |
+| 12:39:57.625 | 4625 (failed) | helpdesk | 3 |
+| 12:39:57.705 | 4625 (failed) | helpdesk | 3 |
+| 12:39:57.787 | 4625 (failed) | helpdesk | 3 |
+| 12:39:59.910 | 4624 (success) | helpdesk | 3 |
+| 12:40:01.480 | 4624 (success) | helpdesk | 10 |
+| 12:49:52.330 | 4625 (failed) | helpdesk | 3 |
+| 12:49:52.413 | 4625 (failed) | helpdesk | 3 |
+| 12:49:52.498 | 4625 (failed) | helpdesk | 3 |
+| … | the same pattern at 12:49, 13:05 and 13:12 | | |
+
+**Why I'm calling it brute force:**
+
+1. **The speed.** Five failed logons in 0.32 seconds, about 80 ms apart. Nobody types five passwords that fast, so it's a tool, not a person.
+2. **The reason for the failures.** SubStatus `0xc000006a` means "the user name is correct, but the password is wrong". The attacker already had a valid account name and was only guessing its password. If they were guessing account names, I'd see `0xc0000064` ("no such user") instead.
+3. **One account, one source.** All 20 failures target `helpdesk` and all come from `10.50.0.100`. Many passwords against one account is password guessing. The opposite pattern, one password tried against many accounts, would be password spraying, and many sources would point to a botnet.
+4. **The failures stop at the first success.** As soon as a password works, there are no more 4625s. The tool gets a type 3 success (the network authentication that RDP does first, NLA), and two seconds later a type 10 (the desktop session opens). It found the password and used it straight away.
+5. **The same shape four times.** Four rounds, each exactly five failures and then a success. That fits a script replaying the same short password list, where the right password comes after five wrong ones.
+
+So it's brute force, more precisely password guessing (MITRE ATT&CK T1110.001), over RDP. One more thing it shows: the account was never locked, since the attempt after five wrong passwords still worked. So either there's no account lockout policy on WKS-L58, or its threshold is higher than five.
+
+**Answer:** `HAM{brute_force}` (accepted)
 
 ### 4. M2: Proof of access (category Mission 2 · Attack)
 

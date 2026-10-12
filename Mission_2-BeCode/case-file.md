@@ -34,7 +34,16 @@ On 12 October 2026 between 12:39 and 13:12 UTC, someone at `10.50.0.100` (WKSTN-
 
 **Account used:** `helpdesk`, a local account that already existed on WKS-L58. **Source:** `10.50.0.100` (WKSTN-07). **Technique:** brute force, password guessing (T1110.001).
 
-I first filtered on RDP logons (type 10) and only found my own `labuser` test, which was rejected. Listing every local account on the workstation showed `helpdesk` with a fresh `LastLogon`. In Sentinel, every `helpdesk` logon comes from one source, `10.50.0.100`, while all my own connections come from the gateway `10.50.0.1`. The 20 failures in four bursts of five, 80 ms apart, rule out a person typing. Queries: `queries.kql`, "Part 2".
+I first filtered on RDP logons (type 10) and only found my own `labuser` test, which was rejected. Listing every local account on the workstation showed `helpdesk` with a fresh `LastLogon`. In Sentinel, every `helpdesk` logon comes from one source, `10.50.0.100`, while all my own connections come from the gateway `10.50.0.1`. Queries: `queries.kql`, "Part 2".
+
+**Why brute force:**
+- **Speed:** five failed logons in 0.32 seconds, 80 ms apart. That's a tool, not a person typing.
+- **Failure reason:** every 4625 has SubStatus `0xc000006a`, meaning "right user name, wrong password". The attacker knew the account and was guessing only its password.
+- **Target:** one account (`helpdesk`), one source (`10.50.0.100`). That's password guessing, not password spraying (one password against many accounts).
+- **End of the attempts:** the failures stop at the first success, which is used immediately: type 3 (NLA), then a type 10 RDP session two seconds later.
+- **Repetition:** the same five failures and a success, four times. That fits a script replaying a short password list.
+
+The account was never locked: the attempt after five failures still worked each time. So there's no account lockout, or the threshold is above five. See `notes.md`, challenge 3, for the full reasoning and both sources.
 
 ## Two sources, one answer
 
