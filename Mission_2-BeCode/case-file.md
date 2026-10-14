@@ -6,7 +6,7 @@ This is the hand-in for Mission 2. It's written so a teammate can follow what ha
 
 ## Summary
 
-On 12 October 2026 between 12:39 and 13:13 UTC, someone at `10.50.0.100` (WKSTN-07) brute-forced the local account `helpdesk` on my workstation WKS-L58: five wrong passwords in a third of a second, then a success, four times. Each success opened a Remote Desktop session. In the last one they left `flag.txt` on the `helpdesk` Desktop (13:13:01) and signed out 20 seconds later. My Sentinel saw every failed and successful logon, but not the file or the command that wrote it, because process creation wasn't audited. On 13 October, after process creation auditing was switched on, the replayed intrusion showed the command in a 4688 event: `"cmd.exe" /c echo HAM{rdp_pwned_seat57}> %USERPROFILE%\Desktop\flag.txt`.
+On 12 October 2026 between 12:39 and 13:13 UTC, someone at `10.50.0.100` (WKSTN-07) brute-forced the local account `helpdesk` on my workstation WKS-L58: five wrong passwords in a third of a second, then a success, four times. Each success opened a Remote Desktop session. In the last one they left `flag.txt` on the `helpdesk` Desktop (13:13:01) and signed out 20 seconds later. My Sentinel saw every failed and successful logon, but not the file or the command that wrote it, because process creation wasn't audited. On 13 October, after process creation auditing was switched on, the replayed intrusion showed the command in a 4688 event: `"C:\Windows\System32\cmd.exe" /c echo HAM{rdp_pwned_seat58}> %USERPROFILE%\Desktop\flag.txt`.
 
 ## Scope
 
@@ -31,7 +31,7 @@ On 12 October 2026 between 12:39 and 13:13 UTC, someone at `10.50.0.100` (WKSTN-
 | 13:13:21 | `helpdesk` logs off | 4634 |
 | 13 Oct 08:23:15 | Logging policy active: first process creation event | 4688 |
 | 13 Oct 08:35:04 → 08:35:08 | Replay: five failed logons, success, RDP session | 5 × 4625, 4624 type 3 + type 10, 4648, from `10.50.0.100` |
-| 13 Oct 08:35:13 | `helpdesk` runs the command that writes `flag.txt` | 4688: `cmd.exe`, parent `rdpinit.exe`, CommandLine `"cmd.exe" /c echo HAM{rdp_pwned_seat57}> %USERPROFILE%\Desktop\flag.txt` |
+| 13 Oct 08:35:13 | `helpdesk` runs the command that writes `flag.txt` | 4688: `cmd.exe`, parent `rdpinit.exe`, CommandLine `"C:\Windows\System32\cmd.exe" /c echo HAM{rdp_pwned_seat58}> %USERPROFILE%\Desktop\flag.txt` |
 | 13 Oct 08:35:34 | The network logon ends | 4634 type 3 |
 
 ## Findings
@@ -59,7 +59,7 @@ I confirmed the logon in two places: the workstation's own Security log (PowerSh
 | From where? | `Get-WinEvent` 4624 type 10: 4 sessions from `10.50.0.100` | Same 4 sessions, same IP, same second | Agree exactly: nothing lost between the machine and the SIEM |
 | What kind of attack? | 4625s with SubStatus `0xc000006a` (wrong password) | Failures and successes in one timeline, 80 ms apart | Complete each other: the reason from one, the shape from the other |
 | What did they leave? | `Get-ChildItem` / `Get-Content`: `flag.txt`, created 13:13:01, with the flag | No file or command (0 × 4688, 0 × 4104), only 10 × 4799 at 13:13:01 | Only the workstation could answer. The SIEM shows *when* the intruder acted, not *what* they did |
-| What command? (after the policy) | `auditpol` / registry for the policy, `Get-WinEvent` for the local 4688 (TODO: run) | 4688 with the full command line, user and parent process | The gap was the endpoint's audit policy, not the SIEM: once the machine writes 4688, Sentinel has it |
+| What command? (after the policy) | `auditpol` / registry: policy on. `Get-WinEvent`: the same 4688 locally | 4688 with the full command line, user and parent process | The gap was the endpoint's audit policy, not the SIEM: once the machine writes 4688, Sentinel has it |
 
 In short: every logon answer was the same in both places, which shows my collection works for logon events. What happened *inside* the session is only on the workstation. PowerShell needs XML parsing by hand and only sees one machine; Sentinel answers the same question in a few lines, keeps every attempt, and can't be wiped by someone with admin rights on the machine. The full comparison of the two methods is in `notes.md`.
 
@@ -77,7 +77,7 @@ In short: every logon answer was the same in both places, which shows my collect
 | | Temps 1 (default logging) | Temps 2 (after the policy) |
 |---|---|---|
 | Failed and successful logons | All of them: 20 × 4625, 4 × 4624 type 3 + type 10, source IP | Unchanged: 5 × 4625, 4624 type 3 + type 10 from `10.50.0.100` |
-| The command the attacker ran | Not visible: 0 × 4688, 0 × 4104. Only side effects like 10 × 4799 at 13:13:01 | Visible: 4688 at 08:35:13, `"cmd.exe" /c echo HAM{rdp_pwned_seat57}> %USERPROFILE%\Desktop\flag.txt` |
+| The command the attacker ran | Not visible: 0 × 4688, 0 × 4104. Only side effects like 10 × 4799 at 13:13:01 | Visible: 4688 at 08:35:13, `"C:\Windows\System32\cmd.exe" /c echo HAM{rdp_pwned_seat58}> %USERPROFILE%\Desktop\flag.txt` |
 | Why | Process creation wasn't audited on the workstation, so no 4688 was ever written | The policy turned on process creation auditing with command lines. My DCR's "Common" set already includes 4688, so the events reached Sentinel with no change on my side |
 
 Default logging told me *who* got in, *from where* and *how*, but not *what they did*. The policy made the action visible: the exact command, the account that ran it and the program that started it. The lesson is that a SIEM can only collect what the machine writes. Collection (my DCR) was ready all along; the missing piece was the audit policy on the endpoint. Even now there are limits: the 4688 shows the command that created `flag.txt`, not the file itself, and actions that don't start a new process would still be invisible.

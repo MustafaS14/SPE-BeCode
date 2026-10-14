@@ -455,7 +455,7 @@ The one that matters, five seconds after the RDP session opened:
 
 | TimeGenerated (UTC) | SubjectUserName | NewProcessName | ParentProcessName | CommandLine |
 |---|---|---|---|---|
-| 2026-10-13 08:35:13.320 | helpdesk | C:\Windows\System32\cmd.exe | C:\Windows\System32\rdpinit.exe | `"cmd.exe" /c echo HAM{rdp_pwned_seat57}> %USERPROFILE%\Desktop\flag.txt` |
+| 2026-10-13 08:35:13.320 | helpdesk | C:\Windows\System32\cmd.exe | C:\Windows\System32\rdpinit.exe | `"C:\Windows\System32\cmd.exe" /c echo HAM{rdp_pwned_seat58}> %USERPROFILE%\Desktop\flag.txt` |
 
 4. On the workstation, open PowerShell as administrator and check the policy that made this possible:
 
@@ -464,7 +464,7 @@ auditpol /get /subcategory:"Process Creation"
 (Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit").ProcessCreationIncludeCmdLine_Enabled
 ```
 
-The first line should show *Success* for Process Creation, and the second should return `1` (command lines included in 4688). TODO: run and confirm.
+Result: Process Creation is set to **Success** (Windows records every program that starts), and `ProcessCreationIncludeCmdLine_Enabled` is **1** (the full command line is included in each 4688).
 
 5. Read the same event from the local Security log:
 
@@ -481,9 +481,13 @@ Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4688} | ForEach-Object {
 } | Where-Object { $_.CommandLine -like '*flag*' } | Format-List
 ```
 
-It should return the same event, at 10:35:13 local time. TODO: run and confirm.
+| TimeCreated (VM local) | UTC | User | Process | Parent | CommandLine |
+|---|---|---|---|---|---|
+| 13-10-26 10:35:13 | 08:35:13 | helpdesk | C:\Windows\System32\cmd.exe | C:\Windows\System32\rdpinit.exe | `"C:\Windows\System32\cmd.exe" /c echo HAM{rdp_pwned_seat58}> %USERPROFILE%\Desktop\flag.txt` |
 
-**Answer:** `"cmd.exe" /c echo HAM{rdp_pwned_seat57}> %USERPROFILE%\Desktop\flag.txt` (accepted). The flag is the whole command line, exactly as it appears in the event.
+The filter `*flag*` also catches `LogonUI.exe` events (started by `winlogon.exe` as `WKS-L58$`), because their command line contains `/flags:0x0`. They're the normal Windows sign-in screen, not the intruder. A tighter filter like `*flag.txt*` or `*rdp_pwned*` returns only the one that matters.
+
+**Answer:** `"C:\Windows\System32\cmd.exe" /c echo HAM{rdp_pwned_seat58}> %USERPROFILE%\Desktop\flag.txt` (accepted). The flag is the whole command line, exactly as it appears in the event.
 
 What the command does, piece by piece:
 - `cmd.exe /c` starts the Windows command prompt, runs one command, then closes.
@@ -491,15 +495,15 @@ What the command does, piece by piece:
 - `>` sends that text into a file, replacing whatever was in it.
 - `%USERPROFILE%\Desktop\flag.txt` is `C:\Users\helpdesk\Desktop\flag.txt` for the `helpdesk` account.
 
-So this is exactly how the `flag.txt` from challenge 5 was made. The parent process is `rdpinit.exe`, the program that starts a new RDP session, and the command ran five seconds after the session opened. That suggests it was set as the session's start program rather than typed by hand. The flag in the command says `seat57` while my seat is 58 and the file I read on 12 October said `seat58`. Because `>` overwrites the file, its content depends on which run wrote it last. The challenge asks for the command line exactly as it is in the event, so that's what I submitted.
+So this is exactly how the `flag.txt` from challenge 5 was made. The parent process is `rdpinit.exe`, the program that starts a new RDP session, and the command ran five seconds after the session opened. That suggests it was set as the session's start program rather than typed by hand. The text it writes, `HAM{rdp_pwned_seat58}`, is the same flag I found in `flag.txt` in challenge 5, so the replay recreated the same proof on my seat. The full path of `cmd.exe` is part of the command line as Windows recorded it, which is why the answer includes it.
 
 **PowerShell vs SIEM**
 
 | | PowerShell (workstation) | KQL (Sentinel) |
 |---|---|---|
 | Code | `auditpol` and the registry for the policy, then `Get-WinEvent` for 4688 with the command line read from the XML | `SecurityEvent`, `EventID == 4688`, `isnotempty(CommandLine)`, filtered on `helpdesk` |
-| What it shows | Whether the machine writes 4688 at all, and the same event locally (TODO: run) | The command, who ran it, which program started it, to the millisecond |
-| Agree? | TODO once run. Both read the same Security log entry, so they should match | |
+| What it shows | The policy is on (Success, `1`), and the same 4688 locally, at 10:35:13 local time | The command, who ran it, which program started it, to the millisecond (08:35:13.320 UTC) |
+| Agree? | Yes, exactly: same user, same process, same parent, and the same 91-character command line in both | |
 
 What it signifies: the gap in Part 3 wasn't in my SIEM's collection. It was on the machine. My DCR already collects the "Common" set, which includes 4688, but the workstation wasn't *writing* any 4688 until the policy turned on process creation auditing with command lines. As soon as it did, the events flowed into Sentinel with no change on my side. In challenge 5 only the workstation could say what happened inside the session (the file). Now the SIEM can too (the command that made the file). One honest limit remains: the 4688 shows the command that *wrote* `flag.txt`, but it isn't a file event. It doesn't record the file itself, only the instruction.
 
