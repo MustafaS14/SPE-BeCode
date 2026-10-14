@@ -412,7 +412,7 @@ What it signifies: this is the first challenge only the workstation could answer
 1. In Sentinel, count the process creation events (4688) and PowerShell script block events (4104) over the last 7 days (query "Part 3: is there any 4688 or 4104 at all?" in `queries.kql`). Both are **0**.
 2. Look at what Sentinel has for `helpdesk` while the intruder was in (challenge 5, step 6): logons, logoff and group lookups, but nothing that names a program or a command.
 
-**Answer:** the command can't be found in Sentinel. Why: logons are audited by default and the "Common" set collects 4624/4625, so the SIEM sees the door open and close. But process creation (4688) isn't audited on WKS-L58, Sysmon isn't installed, and the PowerShell log isn't collected, so a command leaves no event to send. Same gap as Mission 1, where `qemu-ga` wrote files and nothing in `SecurityEvent` showed which program did it. TODO: confirm the command in Part 4, after the policy change.
+**Answer:** the command can't be found in Sentinel. Why: logons are audited by default and the "Common" set collects 4624/4625, so the SIEM sees the door open and close. But process creation (4688) isn't audited on WKS-L58, Sysmon isn't installed, and the PowerShell log isn't collected, so a command leaves no event to send. Same gap as Mission 1, where `qemu-ga` wrote files and nothing in `SecurityEvent` showed which program did it. Part 4 confirmed it: once process creation auditing was switched on, the command showed up in a 4688 event (challenge 7).
 
 ---
 
@@ -420,18 +420,97 @@ What it signifies: this is the first challenge only the workstation could answer
 
 > A logging policy is switched on for everyone, and the intrusion is replayed. Hunt again. This time, find the command the attacker ran on your machine and submit it in CTFd. Then compare: same attack, what you could see before, what you can see now.
 
-### 7. The command, after the policy change
+### 7. M2: Command executed
 
-**Question:** Find the command the attacker ran on your machine.
+**Question:** After the logging policy changed, a new kind of event appeared. What command did the intruder run on your machine? Paste the full command line exactly as it appears in the event.
 
 **Hint 1:** The authentication events did not change. A new kind of event appeared, one that did not exist in your data in Part 2. Find what is new since the policy change, and the command is in it.
 
 **Instructions:**
-1. List the event IDs that appear after the policy change but not before (query "Part 4: what's new since the policy change" in `queries.kql`).
-2. TODO
+1. In Sentinel → Logs, find what's new since the policy change (query "Part 4: what's new since the policy change" in `queries.kql`). The new event is **4688** (*A new process has been created*). The first one arrived on 13 October at 08:23:15 UTC, and there are 2,815 of them over the next days. Before that, there were none at all (challenge 6).
+2. Find the replayed intrusion in the logons, same as in Part 2 (query "Part 4: the replayed intrusion"):
 
-**Answer:** TODO → `HAM{...}` (challenge not in CTFd yet)
+| Time (UTC, 13 Oct) | EventID | LogonType | IpAddress | Count |
+|---|---|---|---|---|
+| 08:35:04 | 4625 (failed) | 3 | 10.50.0.100 | 5 |
+| 08:35:06 | 4624 (success) | 3 | 10.50.0.100 | 1 |
+| 08:35:08 | 4648 (explicit credentials) | | 10.50.0.100 | 1 |
+| 08:35:08 | 4624 (success) | 10 | 10.50.0.100 | 1 |
+| 08:35:34 | 4634 (logged off) | 3 | | 1 |
+
+The authentication part is the same as before: five failed logons for `helpdesk` from `10.50.0.100`, then a success and an RDP session. This time there was one round, not four.
+
+3. List the process creation events with a command line for `helpdesk`:
+
+```kql
+SecurityEvent
+| where EventID == 4688
+| where isnotempty(CommandLine)
+| where SubjectUserName == "helpdesk"
+| project TimeGenerated, SubjectUserName, NewProcessName, ParentProcessName, CommandLine
+| sort by TimeGenerated asc
+```
+
+The one that matters, five seconds after the RDP session opened:
+
+| TimeGenerated (UTC) | SubjectUserName | NewProcessName | ParentProcessName | CommandLine |
+|---|---|---|---|---|
+| 2026-10-13 08:35:13.320 | helpdesk | C:\Windows\System32\cmd.exe | C:\Windows\System32\rdpinit.exe | `"cmd.exe" /c echo HAM{rdp_pwned_seat57}> %USERPROFILE%\Desktop\flag.txt` |
+
+4. On the workstation, open PowerShell as administrator and check the policy that made this possible:
+
+```powershell
+auditpol /get /subcategory:"Process Creation"
+(Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit").ProcessCreationIncludeCmdLine_Enabled
+```
+
+The first line should show *Success* for Process Creation, and the second should return `1` (command lines included in 4688). TODO: run and confirm.
+
+5. Read the same event from the local Security log:
+
+```powershell
+Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4688} | ForEach-Object {
+    [xml]$xml = $_.ToXml()
+    [PSCustomObject]@{
+        TimeCreated = $_.TimeCreated
+        User        = ($xml.Event.EventData.Data | Where-Object Name -eq 'SubjectUserName').'#text'
+        Process     = ($xml.Event.EventData.Data | Where-Object Name -eq 'NewProcessName').'#text'
+        Parent      = ($xml.Event.EventData.Data | Where-Object Name -eq 'ParentProcessName').'#text'
+        CommandLine = ($xml.Event.EventData.Data | Where-Object Name -eq 'CommandLine').'#text'
+    }
+} | Where-Object { $_.CommandLine -like '*flag*' } | Format-List
+```
+
+It should return the same event, at 10:35:13 local time. TODO: run and confirm.
+
+**Answer:** `"cmd.exe" /c echo HAM{rdp_pwned_seat57}> %USERPROFILE%\Desktop\flag.txt` (accepted). The flag is the whole command line, exactly as it appears in the event.
+
+What the command does, piece by piece:
+- `cmd.exe /c` starts the Windows command prompt, runs one command, then closes.
+- `echo HAM{...}` writes the text.
+- `>` sends that text into a file, replacing whatever was in it.
+- `%USERPROFILE%\Desktop\flag.txt` is `C:\Users\helpdesk\Desktop\flag.txt` for the `helpdesk` account.
+
+So this is exactly how the `flag.txt` from challenge 5 was made. The parent process is `rdpinit.exe`, the program that starts a new RDP session, and the command ran five seconds after the session opened. That suggests it was set as the session's start program rather than typed by hand. The flag in the command says `seat57` while my seat is 58 and the file I read on 12 October said `seat58`. Because `>` overwrites the file, its content depends on which run wrote it last. The challenge asks for the command line exactly as it is in the event, so that's what I submitted.
+
+**PowerShell vs SIEM**
+
+| | PowerShell (workstation) | KQL (Sentinel) |
+|---|---|---|
+| Code | `auditpol` and the registry for the policy, then `Get-WinEvent` for 4688 with the command line read from the XML | `SecurityEvent`, `EventID == 4688`, `isnotempty(CommandLine)`, filtered on `helpdesk` |
+| What it shows | Whether the machine writes 4688 at all, and the same event locally (TODO: run) | The command, who ran it, which program started it, to the millisecond |
+| Agree? | TODO once run. Both read the same Security log entry, so they should match | |
+
+What it signifies: the gap in Part 3 wasn't in my SIEM's collection. It was on the machine. My DCR already collects the "Common" set, which includes 4688, but the workstation wasn't *writing* any 4688 until the policy turned on process creation auditing with command lines. As soon as it did, the events flowed into Sentinel with no change on my side. In challenge 5 only the workstation could say what happened inside the session (the file). Now the SIEM can too (the command that made the file). One honest limit remains: the 4688 shows the command that *wrote* `flag.txt`, but it isn't a file event. It doesn't record the file itself, only the instruction.
 
 **Before you leave: before / after**
 
-TODO (goes into the case file): same attack, what default logging showed, and what the policy made visible.
+Same attack, same account, same source. Only the logging policy changed.
+
+| | Temps 1 (12 Oct, default logging) | Temps 2 (13 Oct, after the policy) |
+|---|---|---|
+| Failed and successful logons | All visible: 20 × 4625, 4 × (4624 type 3 + type 10) from `10.50.0.100` | All visible: 5 × 4625, 4624 type 3 + type 10 from `10.50.0.100`. Unchanged |
+| The command | Not visible: 0 × 4688. Only side effects (10 × 4799 at the moment `flag.txt` appeared) | Visible: 4688 at 08:35:13 with the full command line, user `helpdesk`, parent `rdpinit.exe` |
+| What answers "what did they do?" | Only the workstation (the file on the Desktop) | The SIEM, from the event alone |
+
+Default logging tells you *who got in, from where, and how*. It doesn't tell you *what they did*. Process creation auditing with command lines closes that gap for anything launched as a process. Because the SIEM can only collect what the machine writes, the audit policy on the endpoint matters as much as the DCR.

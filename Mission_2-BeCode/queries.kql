@@ -153,18 +153,26 @@ SecurityEvent
 // Part 4: after the policy change (Temps 2)
 // ---------------------------------------------------------------------------
 
-// What's new since the policy change? Event IDs seen after it that never appeared before
-let policyChange = datetime(2026-10-12 00:00);   // TODO: time the policy was switched on (UTC)
+// What's new since the policy change? Event IDs seen after it that never appeared before (answer: 4688, first at 13 Oct 08:23:15 UTC)
+let policyChange = datetime(2026-10-13 08:00);
 let before = SecurityEvent | where TimeGenerated between (ago(30d) .. policyChange) | distinct EventID;
 SecurityEvent
 | where TimeGenerated > policyChange
 | where EventID !in (before)
-| summarize Count = count(), Example = any(Activity) by EventID
+| summarize Count = count(), First = min(TimeGenerated), Example = any(Activity) by EventID
 
-// Process creation with the command line, for the intruder's account (4688 only exists once the policy is on)
+// Part 4: the replayed intrusion (logons of helpdesk on 13 Oct)
 SecurityEvent
-| where TimeGenerated > ago(7d)
+| where TimeGenerated between (datetime(2026-10-13 08:00) .. datetime(2026-10-13 09:30))
+| where TargetUserName == "helpdesk"
+| where EventID in (4624, 4625, 4634, 4647, 4648)
+| summarize Count = count(), FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated) by EventID, LogonType, IpAddress
+| sort by FirstSeen asc
+
+// Part 4: process creation with the command line for helpdesk (this gave the command)
+SecurityEvent
 | where EventID == 4688
-| where SubjectUserName == "TODO_account"
-| project TimeGenerated, SubjectUserName, NewProcessName, CommandLine, ParentProcessName
+| where isnotempty(CommandLine)
+| where SubjectUserName == "helpdesk"
+| project TimeGenerated, SubjectUserName, NewProcessName, ParentProcessName, CommandLine
 | sort by TimeGenerated asc
