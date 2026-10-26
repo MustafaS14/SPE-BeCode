@@ -1,0 +1,65 @@
+// Mission 03: the KQL I ran in Sentinel → Logs
+// Times in UTC. Most of this mission happens off the workstation (scanning, SMB
+// enumeration from my attack machine, GPP decryption) and will NOT show up here —
+// only the RDP reconnection, the lockout-era failed logons, and the anonymous SMB
+// access to WKS-L58 itself are workstation-visible. Fill in windows below as I go.
+
+// Is my machine still sending? (check before trusting "nothing found")
+Heartbeat
+| where Computer startswith "WKS-L58"
+| summarize LastSeen = max(TimeGenerated)
+
+// ---------------------------------------------------------------------------
+// Step 2: anonymous/guest SMB access to WKS-L58
+// ---------------------------------------------------------------------------
+
+// Any anonymous or guest network logon around the time of the SMB enumeration
+let windowStart = datetime(2026-01-01 00:00);   // TODO: replace with the actual window
+let windowEnd   = datetime(2026-01-01 23:59);   // TODO: replace with the actual window
+SecurityEvent
+| where TimeGenerated between (windowStart .. windowEnd)
+| where EventID in (4624, 4625)
+| where LogonType == 3
+| where TargetUserName in ("ANONYMOUS LOGON", "Guest") or AuthenticationPackageName == "NTLM"
+| project TimeGenerated, EventID, TargetUserName, IpAddress, LogonType, AuthenticationPackageName, Activity
+| sort by TimeGenerated asc
+
+// ---------------------------------------------------------------------------
+// Step 4: lockout-era failed logons and the successful reconnection
+// ---------------------------------------------------------------------------
+
+// Failed RDP logons for the recovered account before the fix (TODO: replace account name)
+SecurityEvent
+| where TimeGenerated > ago(7d)
+| where TargetUserName == "TODO_account"
+| where EventID == 4625
+| project TimeGenerated, EventID, IpAddress, LogonType, Status, SubStatus
+| sort by TimeGenerated asc
+
+// Was the account actually locked out? (4740 = account locked out)
+SecurityEvent
+| where TimeGenerated > ago(7d)
+| where EventID == 4740
+| where TargetUserName == "TODO_account"
+| project TimeGenerated, TargetUserName, Activity
+
+// The successful RDP reconnection once the client security-layer issue was fixed
+SecurityEvent
+| where TimeGenerated > ago(7d)
+| where TargetUserName == "TODO_account"
+| where EventID == 4624
+| where LogonType == 10
+| project TimeGenerated, Computer, TargetUserName, IpAddress, LogonTypeName, Activity
+| sort by TimeGenerated desc
+
+// ---------------------------------------------------------------------------
+// Step 5: whatever the workstation logged during the session on the regained desktop
+// ---------------------------------------------------------------------------
+
+// Process creation during the RDP session window, if auditing is still on from Mission 2
+SecurityEvent
+| where TimeGenerated between (datetime(2026-01-01 00:00) .. datetime(2026-01-01 23:59))   // TODO: session window
+| where EventID == 4688
+| where isnotempty(CommandLine)
+| project TimeGenerated, SubjectUserName, NewProcessName, ParentProcessName, CommandLine
+| sort by TimeGenerated asc
