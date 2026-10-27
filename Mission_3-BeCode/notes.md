@@ -60,16 +60,33 @@
    - `rpcclient -U 'guest%' 10.50.0.58` → connects. `srvinfo` works (`10.50.0.58 Wk Sv NT`, platform_id 500, os version 10.0, server type 0x1003 — just confirms it's a Windows 10/11-era host). `enumdomusers` → `NT_STATUS_CONNECTION_DISCONNECTED`. `netshareenum` → `WERR_ACCESS_DENIED`. `querydominfo` → `NT_STATUS_CONNECTION_DISCONNECTED`.
 4. KQL — haven't checked Sentinel for the anonymous SMB access itself yet (logon type 3, `ANONYMOUS LOGON`/Guest, from my Tailscale-assigned address). TODO once I'm past this gate, so I'm not burning a Sentinel query on something I'll want to re-run with a tighter time window later.
 
-**Answer:** `Public` exists and anonymous enumeration finds it, but nothing I tried (true null session, Guest with blank password, blank/anonymous auth, or RPC via IPC$) can actually read it. This is a consistent, reproducible "no" across two different protocols (SMB file access and RPC) and three auth styles each — not a fluke or a syntax mistake on my end. Only the baseline `srvinfo` RPC call (which Windows exposes to basically anyone) succeeded; everything that would reveal users, shares, or domain info is denied. **Escalated to the coach** rather than continuing to guess blindly: asked whether `Public` is meant to be anonymously readable for this mission, or whether there's a specific account/step I'm missing. Waiting on a reply before going further here.
+**Answer:** `Public` exists and anonymous enumeration finds it, but nothing I tried (true null session, Guest with blank password, blank/anonymous auth, or RPC via IPC$) can actually read it. This is a consistent, reproducible "no" across two different protocols (SMB file access and RPC) and three auth styles each — not a fluke or a syntax mistake on my end. Only the baseline `srvinfo` RPC call (which Windows exposes to basically anyone) succeeded; everything that would reveal users, shares, or domain info is denied. **Escalated to the coach** rather than continuing to guess blindly: asked whether `Public` is meant to be anonymously readable for this mission, or whether there's a specific account/step I'm missing.
+
+**Update — resolved by widening the scan to the whole subnet.** The coach's follow-up ("knock on 445 and see what happens") and a classmate's description of the intended approach both pointed the same way: use `10.50.0.58`'s own subnet (`10.50.0.0/24`) to scan for *other* hosts, not just keep hammering `Public` on WKS-L58 itself.
+
+1. Full subnet sweep, first pass (top 20 ports, for speed): `nmap -sT -Pn -T4 --top-ports 20 10.50.0.0/24`. This turned up a contiguous block of hosts, `10.50.0.50`–`10.50.0.68` (with gaps at `.60` and `.65`), all sharing WKS-L58's exact signature (445 + 3389 open) — plus two standouts: `10.50.0.10` (445 only, no 3389) and `10.50.0.240` (closed 445/3389, but an unexpected 8000/tcp open — turned out to be an unrelated internal web app, a dead end for this mission).
+2. Checked anonymous SMB access across the `.50`–`.68` block with `smbmap -H <ip> -u 'guest' -p ''` for every host. Every host matched WKS-L58's "Public: NO ACCESS" pattern — **except `10.50.0.50`, where `Public` came back `READ ONLY`.** That's the actual foothold: one host in a block of near-identical decoys where the share is genuinely readable anonymously.
+3. `smbclient //10.50.0.50/Public -U 'guest%'` → in: one file, `account-access.txt` (123 bytes). Downloaded with `get account-access.txt`, read with `cat`:
+   ```
+   Training account (temporary, to be rotated):
+   Username: training01
+   Password: [REDACTED — recovered, to be rotated]
+   proof: HAM{anon_smb_seat50}
+   ```
+4. Tried to use `training01` right away — against WKS-L58's `Public` share, against `.50`'s own `ADMIN$`/`C$`, and by guessing `SYSVOL`/`NETLOGON` share names on both hosts. All denied or `NT_STATUS_BAD_NETWORK_NAME` (share doesn't exist). Also tried resolving `hamilton.corp` and querying DNS directly against `.1`, `.58`, `.50`, `.10` (both via the default resolver and by pointing `nslookup` straight at each host's port 53) — every attempt timed out or NXDOMAIN'd. No domain controller is reachable from my attack machine over this Tailscale subnet route, by IP or by name.
+
+**Conclusion:** `training01` is confirmed to be a real, low-privilege domain account — per the person who pointed me at this, it only has access to "the domain share" (i.e. SYSVOL), not to anything local on these workstations. Since I can't reach a DC from off-box at all (no DNS, no SMB share by that name anywhere I've checked), this account is most likely meant to be used *from inside* the domain network — i.e. after RDP'ing into WKS-L58 in Step 4, where the workstation's own domain-joined DNS/Kerberos would actually resolve `hamilton.corp`. Revisiting Step 3 properly once Step 4 (getting back in over RDP) is done.
 
 **PowerShell (attack machine) vs KQL (Sentinel) — what it signifies:**
 
 | | Attack-machine tool | KQL (Sentinel) |
 |---|---|---|
-| What it shows | Share names enumerable anonymously; share *contents* denied under every anonymous method tried | TODO: haven't queried yet — should show the anonymous/guest logon attempts from my Tailscale address, if logon auditing on WKS-L58 covers them |
+| What it shows | Share names enumerable anonymously; share *contents* denied on WKS-L58 itself — but a sibling host in the same subnet block (`10.50.0.50`) anonymously exposes `Public` as read-only, containing a training credential | TODO: haven't queried yet — should show the anonymous/guest logon attempts from my Tailscale address, if logon auditing on WKS-L58 covers them |
 | Agree? | TODO once the KQL side is run | |
 
 If Sentinel doesn't show these anonymous SMB attempts at all, that's worth noting in the case file's control-gaps section on its own — it would mean anonymous access attempts against a workstation aren't being surfaced, independent of whether `Public` turns out to be readable.
+
+**Mission 3 CTFd flag — First foothold (100 pts):** `HAM{anon_smb_seat50}` — found by widening the scan from just WKS-L58 to the whole `10.50.0.0/24` subnet and comparing anonymous SMB access across every host sharing its signature; `10.50.0.50` was the one host where `Public` was actually readable.
 
 ---
 
@@ -80,11 +97,13 @@ If Sentinel doesn't show these anonymous SMB attempts at all, that's worth notin
 **Hint(s):** GPP's "encryption" uses a key Microsoft published back in 2014 (MS14-025) — this isn't something to brute-force, there are standard tools that do it in one command.
 
 **Instructions:**
-1. TODO: locate the GPP XML (classically `Groups.xml`) on the retrieved share contents.
-2. TODO: run a standard GPP decrypt tool against the `cpassword` value (e.g. `gpp-decrypt`, CrackMapExec's `gpp_autologin` module, or PowerSploit's `Get-GPPPassword.ps1`).
-3. Record **that** a credential was recovered and for which account — not the plaintext. `[REDACTED — recovered, rotated]`.
+1. Found a low-privilege domain account (`training01`) in `account-access.txt` on `10.50.0.50`'s anonymously-readable `Public` share (see Step 2 update above) — not a GPP XML directly, but a credential meant to unlock the next step.
+2. Tried using `training01` from my attack machine to reach the domain share it's scoped to (per the person who described the account, it only accesses "the domain share" — i.e. SYSVOL, where GPP files live): tested against WKS-L58 and `.50` directly, guessed `SYSVOL`/`NETLOGON` share names, and tried resolving/querying DNS for `hamilton.corp` against every host I've found with SMB open. All denied, `BAD_NETWORK_NAME`, or DNS timeout — **no domain controller is reachable from this attack machine over the current Tailscale subnet route.**
+3. TODO: this account is most likely meant to be used from *inside* the domain (i.e. after RDP'ing into WKS-L58 in Step 4, where domain-joined DNS/Kerberos would resolve properly) — revisit this step once Step 4 is done, from inside that session.
+4. TODO once SYSVOL is reachable: locate the GPP XML (classically `Groups.xml`) and run a standard GPP decrypt tool against the `cpassword` value (e.g. `gpp-decrypt`, CrackMapExec's `gpp_autologin` module, or PowerSploit's `Get-GPPPassword.ps1`).
+5. Record **that** a credential was recovered and for which account — not the plaintext. `[REDACTED — recovered, rotated]`.
 
-**Answer:** TODO (account name the credential belongs to; plaintext redacted).
+**Answer:** Blocked on reaching SYSVOL/the domain controller from off-box. `training01` recovered (`[REDACTED — recovered, to be rotated]`) but its one real use (the domain share) isn't reachable until I'm on the domain network itself — revisiting after Step 4.
 
 **Sentinel side:** none — this decryption happens entirely on my attack machine against a file I already pulled. Nothing to query here.
 
