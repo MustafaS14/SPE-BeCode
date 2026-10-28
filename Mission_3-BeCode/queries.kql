@@ -1,8 +1,8 @@
 // Mission 03: the KQL I ran in Sentinel → Logs
 // Times in UTC. Most of this mission happens off the workstation (scanning, SMB
-// enumeration from my attack machine, GPP decryption) and will NOT show up here —
+// enumeration from my attack machine, GPP decryption) and does NOT show up here —
 // only the RDP reconnection, the lockout-era failed logons, and the anonymous SMB
-// access to WKS-L58 itself are workstation-visible. Fill in windows below as I go.
+// access to WKS-L58 itself are workstation-visible.
 
 // Is my machine still sending? (check before trusting "nothing found")
 Heartbeat
@@ -13,53 +13,79 @@ Heartbeat
 // Step 2: anonymous/guest SMB access to WKS-L58
 // ---------------------------------------------------------------------------
 
-// Any anonymous or guest network logon around the time of the SMB enumeration
-let windowStart = datetime(2026-01-01 00:00);   // TODO: replace with the actual window
-let windowEnd   = datetime(2026-01-01 23:59);   // TODO: replace with the actual window
+// Any anonymous or guest network logon (type 3) on WKS-L58
 SecurityEvent
-| where TimeGenerated between (windowStart .. windowEnd)
-| where EventID in (4624, 4625)
+| where Computer has "WKS-L58"
+| where EventID == 4624
 | where LogonType == 3
-| where TargetUserName in ("ANONYMOUS LOGON", "Guest") or AuthenticationPackageName == "NTLM"
-| project TimeGenerated, EventID, TargetUserName, IpAddress, LogonType, AuthenticationPackageName, Activity
-| sort by TimeGenerated asc
+| where Account has_any ("ANONYMOUS LOGON", "Guest")
+| project TimeGenerated, Computer, Account, IpAddress, LogonType, AuthenticationPackageName
+| order by TimeGenerated asc
+
+// Result: 3 matches —
+//   27/10 11:36:47  WKS-L58\Guest              10.50.0.1  NTLM  (first smbclient -L -N pass)
+//   27/10 15:34:17  WORKGROUP\ANONYMOUS LOGON  10.50.0.1  NTLM  (true null-session retry)
+//   27/10 15:35:15  WKS-L58\Guest              10.50.0.1  NTLM  (second guest retry)
+// IpAddress is 10.50.0.1 for all three — the Tailscale subnet router's gateway
+// address, not my actual attack-machine address. The router masks the real
+// source; a real investigation would need the router's own connection logs to
+// attribute this further.
 
 // ---------------------------------------------------------------------------
 // Step 4: lockout-era failed logons and the successful reconnection
 // ---------------------------------------------------------------------------
 
-// Failed RDP logons for the recovered account before the fix (TODO: replace account name)
+// Failed logons for svc_deploy while troubleshooting the domain-vs-local address form
 SecurityEvent
-| where TimeGenerated > ago(7d)
-| where TargetUserName == "TODO_account"
+| where Computer has "WKS-L58"
 | where EventID == 4625
-| project TimeGenerated, EventID, IpAddress, LogonType, Status, SubStatus
-| sort by TimeGenerated asc
+| project TimeGenerated, Computer, Account, TargetUserName, LogonType, IpAddress, FailureReason, SubStatus
+| order by TimeGenerated asc
 
-// Was the account actually locked out? (4740 = account locked out)
-SecurityEvent
-| where TimeGenerated > ago(7d)
-| where EventID == 4740
-| where TargetUserName == "TODO_account"
-| project TimeGenerated, TargetUserName, Activity
+// Result: 22 matches, every single one Account = HAMILTON\svc_deploy
+//   27/10 16:43:19 - 17:03:00  (14 attempts, first troubleshooting session)
+//   28/10 09:31:46, 09:31:49   (2 attempts)
+//   28/10 10:10:38, 10:10:43   (2 attempts, continuing)
+//   ... (22 total)
+// Every event: FailureReason %%2313, SubStatus 0xC0000064 = STATUS_NO_SUCH_USER.
+// Not a bad-password code — confirms WKS-L58's local SAM has no domain-qualified
+// "svc_deploy" account to find at all, matching the GPP "Local Users and Groups"
+// finding from Step 3. Mix of LogonType 3 (IP "-") and LogonType 10 (IP 10.50.0.1)
+// both failed identically, ruling out anything RDP-protocol-specific.
 
-// The successful RDP reconnection once the client security-layer issue was fixed
+// The successful RDP reconnection once addressed as a local account
 SecurityEvent
-| where TimeGenerated > ago(7d)
-| where TargetUserName == "TODO_account"
+| where Computer has "WKS-L58"
 | where EventID == 4624
 | where LogonType == 10
-| project TimeGenerated, Computer, TargetUserName, IpAddress, LogonTypeName, Activity
-| sort by TimeGenerated desc
+| where Account has "svc_deploy"
+| project TimeGenerated, Computer, Account, IpAddress, LogonType, AuthenticationPackageName
+| order by TimeGenerated asc
+
+// Result: 4 matches, all Account = WKS-L58\svc_deploy (the local form, as expected)
+//   28/10 09:32:35.269  (logged twice — Windows commonly logs a pair of 4624s per
+//   28/10 10:11:21.472   RDP connection)
+// IpAddress 10.50.0.1 again (gateway masking, same as Step 2).
+// AuthenticationPackageName: Negotiate.
+// This is the direct Sentinel-side confirmation of the local-vs-domain-account
+// fix: HAMILTON\svc_deploy never worked because it doesn't exist; WKS-L58\svc_deploy
+// worked on the first real attempt.
 
 // ---------------------------------------------------------------------------
 // Step 5: whatever the workstation logged during the session on the regained desktop
 // ---------------------------------------------------------------------------
 
-// Process creation during the RDP session window, if auditing is still on from Mission 2
+// Process creation during the RDP session window, if auditing covers it
 SecurityEvent
-| where TimeGenerated between (datetime(2026-01-01 00:00) .. datetime(2026-01-01 23:59))   // TODO: session window
+| where Computer has "WKS-L58"
 | where EventID == 4688
 | where isnotempty(CommandLine)
+| where TimeGenerated > datetime(2026-10-28 09:00)
 | project TimeGenerated, SubjectUserName, NewProcessName, ParentProcessName, CommandLine
-| sort by TimeGenerated asc
+| order by TimeGenerated asc
+
+// Not pulled in detail for the write-up — the Step 4 query above already
+// establishes the RDP session bounds (09:32 / 10:11 on 28/10), and process-level
+// auditing wasn't the focus once the three desktop artifacts (proof flag, new
+// Sentinel credential, staged employees.csv) were already accounted for directly
+// from the desktop itself.
