@@ -89,3 +89,21 @@ SecurityEvent
 // auditing wasn't the focus once the three desktop artifacts (proof flag, new
 // Sentinel credential, staged employees.csv) were already accounted for directly
 // from the desktop itself.
+
+// ---------------------------------------------------------------------------
+// Addendum: further SMB/LDAP checks against WKS-L58 and the DC, off-box
+// ---------------------------------------------------------------------------
+// None of this is KQL - it's attack-machine SMB/LDAP activity, noted here only
+// so this file stays a complete map of "what was checked and how":
+//   - WKS-L58's own Public share (not just 10.50.0.50's) also anonymously
+//     exposes an account-access.txt with a second training01 credential.
+//   - svc_deploy's decrypted credential is denied on WKS-L58's ADMIN$/C$ over
+//     SMB (NT_STATUS_ACCESS_DENIED) - expected Windows "Remote UAC" token
+//     filtering for a non-RID-500 local admin account on a *network* logon;
+//     the same account has a full admin token over the *interactive* RDP
+//     logon used in Step 4/5, which is why that worked and this doesn't.
+//   - training01 against the DC (10.50.0.10): NETLOGON share is genuinely
+//     empty live (matches the local SYSVOL download), C$/ADMIN$ both denied
+//     (expected for a low-privilege account), and LDAP/389 is unreachable
+//     ("Can't contact LDAP server") - consistent with Step 3's finding that
+//     the DC's AD-specific ports are firewalled off this network path.
