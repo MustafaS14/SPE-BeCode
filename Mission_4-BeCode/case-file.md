@@ -1,54 +1,54 @@
 # Mission 4 — DFIR report: a service account goes rogue
 
-> Draft — built from the mission's `CASE_FILE_TEMPLATE.md`. Every section below is TODO until the real investigation (see `notes.md`) is complete. Filled in English, guidance removed, as the template asks, once there's something real to say.
+> Done — built from the mission's `CASE_FILE_TEMPLATE.md`, filled in once the investigation (see `notes.md`) was complete. Guidance text removed, as the template asks.
 
 ## 1. Executive summary — for a manager
 
-TODO — three to five sentences, plain language: what happened, what was taken, and whether the intruder is still inside.
+A SQL Server service account (`svc-app58`) was compromised, almost certainly by Kerberoasting its service ticket and cracking the password offline against the domain controller — an attack that leaves no trace on the workstation it later touched. Starting the afternoon of 2 November 2026, the account ran a short burst of situational-awareness commands on my workstation (WKS-L58), gathered a small file of customer records (names, emails, subscription plans, revenue) into a plaintext file, and planted a scheduled task that keeps logging the account back on every 15 minutes. That task was still running, unattended, at the time of this investigation — the intruder's access is still active as of this writing. No evidence of the staged data leaving the machine was found, but it was fully prepared for exfiltration.
 
 ## 2. Technical narrative — for a technician
 
-One short paragraph per stage, in order. For each: what was observed, how it's known, and the time. No commands — technique and reasoning, not a command dump.
+**Stage 0 — how the account was stolen (root cause, not in my Sentinel):** Reasoned from the mission brief, not observed: `svc-app58` holds a Service Principal Name (`MSSQLSvc/app58.hamilton.corp`, confirmed in Step 1 below), which means any domain user can request a Kerberos service ticket for it and crack the ticket offline (Kerberoasting) without touching the account or generating a failed logon. This happens against the domain controller, which my Sentinel doesn't collect from yet, so it's inferred from the mechanism, not logged evidence.
 
-**Stage 0 — how the account was stolen (root cause, not in my Sentinel):** TODO — reasoned from the mission brief (Kerberoasting via the account's SPN), not observed in my workspace.
+**Stage 1 — the logon that should not exist:** `HAMILTON\svc-app58` signed onto WKS-L58 with LogonType 4 (Batch — the type scheduled tasks use, never a human interactive sign-in) starting 2026-11-02 13:41:48.822 UTC. That logon type alone, for an account that should only ever run a SQL Server service, is the anomaly.
 
-**Stage 1 — the logon that should not exist:** TODO.
+**Stage 2 — what the account did:** In the same ~1.5 seconds as that first logon, the account ran a tight, scripted burst of recon commands — `whoami`, `whoami /all`, `net user svc-app58`, `net localgroup administrators`, `ipconfig /all` — the gaps between them (tens of milliseconds) are far too fast for a human at a keyboard. This is textbook post-compromise situational awareness: who am I, what do I have access to, what does this network look like.
 
-**Stage 2 — what the account did:** TODO.
+**Stage 3 — the data it gathered and staged:** A CSV file (`customers`) containing three customer records — name, email, subscription plan, and monthly recurring revenue — was found sitting in plaintext on the WKS-L58 desktop, created about an hour after the initial compromise. A proof file next to it confirms it as the deliberately staged cache. A second, older file on the same desktop (`employees`, tagged with a different mission's marker and dated nearly a week earlier) was ruled out as unrelated leftover rather than mistaken for this incident's data.
 
-**Stage 3 — the data it gathered and staged:** TODO.
-
-**Stage 4 — the way it left itself back in:** TODO.
+**Stage 4 — the way it left itself back in:** A scheduled task (`M4-SvcApp58-Persistence`) runs as `svc-app58` every 15 minutes, re-authenticating and writing a line to a log file each time — a minimal but effective heartbeat that keeps the compromised account's access alive indefinitely without anyone needing to be logged on. It started at the moment of compromise and was still firing, unattended, at the time of this investigation (confirmed both in Sentinel's recurring logon pattern and directly in Task Scheduler on the host). A second, one-shot task (`M4-SvcApp58-Session`) ran once, at a time matching the staged-data file almost exactly, and is the more likely candidate for having actually produced it.
 
 ## 3. MITRE ATT&CK mapping
 
 | Stage | Tactic | Technique (ID + name) | What I observed | Where I can prove it |
 |---|---|---|---|---|
-| 0 — root cause | TODO | TODO | TODO | reasoned — happened off my workstation |
-| 1 — initial access | TODO | TODO | TODO | TODO |
-| 2 — execution | TODO | TODO | TODO | TODO |
-| 3 — collection / staging | TODO | TODO | TODO | TODO |
-| 4 — persistence | TODO | TODO | TODO | TODO |
+| 0 — root cause | Credential Access | T1558.003 — Steal or Forge Kerberos Tickets: Kerberoasting | Reasoned from the account's SPN (`MSSQLSvc/app58.hamilton.corp`) and the mission brief; no failed logons or alarms expected | reasoned — happened off my workstation, against the DC, not in my Sentinel's scope |
+| 1 — initial access / logon | Defense Evasion / Initial Access | T1078.002 — Valid Accounts: Domain Accounts | `HAMILTON\svc-app58`, LogonType 4 (Batch), first at 2026-11-02 13:41:48.822 UTC | `SecurityEvent`, `EventID 4624`, `Account has "svc-app58"` |
+| 2 — execution / discovery | Discovery | T1033 (System Owner/User Discovery), T1087 (Account Discovery), T1016 (System Network Config Discovery) | `whoami`, `whoami /all`, `net user svc-app58`, `net localgroup administrators`, `ipconfig /all`, all within ~1.5s | `SecurityEvent`, `EventID 4688`, `Account has "svc-app58"`, grouped by `CommandLine` |
+| 3 — collection / staging | Collection | T1074.001 — Data Staged: Local Data Staging | `customers` CSV (3 records, PII + revenue data) on the WKS-L58 desktop, created ~1hr after compromise | Not in Sentinel (no file-access auditing in this workspace) — found by direct inspection of the host |
+| 4 — persistence | Persistence | T1053.005 — Scheduled Task/Job: Scheduled Task | `M4-SvcApp58-Persistence`, runs as `svc-app58` every 15 minutes, still active at investigation time | Task creation (`EventID 4698`) absent workspace-wide — proven instead via `EventID 4624`, `LogonType 4`, 96 runs at a clean 900s cadence; confirmed directly via `Get-ScheduledTask` on the host |
 
 ## 4. Impact and containment
 
-**What was taken:** TODO — the kind of data and roughly how many records, without copying the data itself.
+**What was taken:** A small staged cache of customer data — 3 records, each with full name, email address, subscription plan, and monthly recurring revenue (a mix of PII and commercially sensitive data). No evidence in Sentinel of this file actually leaving the machine (no outbound transfer visible with the auditing enabled here), but it was fully prepared and ready to go.
 
-**Still inside?:** TODO — what makes this incident ongoing, and what would run again if nobody acts.
+**Still inside?:** Yes. The `M4-SvcApp58-Persistence` scheduled task was still running on its 15-minute cycle at the time this investigation was performed — the account's access to WKS-L58 has not been revoked and the foothold is live right now, not just historically.
 
-**Containment now:** TODO — the first actions to shut this account and this foothold down today.
+**Containment now:** Disable or delete the `M4-SvcApp58-Persistence` and `M4-SvcApp58-Session` scheduled tasks on WKS-L58 immediately. Force a password reset (and re-Kerberoast-proof the credential — see remediation) on `svc-app58`, and audit every other host this account may have reached. Treat the staged `customers` data as potentially compromised for breach-notification purposes even without confirmed exfiltration, since it was fully staged and ready.
 
 ## 5. Remediation — stop it happening again
 
 | Weakness | Why it worked | Missing control + fix |
 |---|---|---|
-| TODO | TODO | TODO |
-| TODO | TODO | TODO |
+| `svc-app58` has an SPN and a crackable password | Any domain user can request a service ticket for an SPN-bearing account and crack it offline (Kerberoasting) with no alarm | Use a long, randomly-generated password (25+ chars) or a Group Managed Service Account (gMSA) for `svc-app58`, which rotates automatically and is effectively un-crackable offline; enforce AES-only Kerberos encryption for service accounts (disable RC4) |
+| Task Scheduler object-creation events aren't audited in this environment | `EventID 4698` never appears, so a new persistence task can be created with zero SIEM visibility — this investigation only caught it through an indirect signal (recurring batch logons), not a direct alert | Enable the "Audit Other Object Access Events" advanced audit subcategory (success+failure) via GPO, so `4698`/`4699`/`4700`/`4701`/`4702` actually reach Sentinel; without it, a defender is relying on inference, not detection |
+| A SQL Server service account can log on interactively/by-proxy and run shell commands at all | `svc-app58` should only ever authenticate to run the SQL Server service, never sign on with LogonType 4 and run `whoami`/`net`/`ipconfig` | Apply "Deny log on locally" / restrict allowed logon types for service accounts via GPO, and alert on any interactive or batch logon by an account whose only expected use is a Windows service logon (type 5) |
+| Staged sensitive data sat as a readable plaintext file on the desktop | No file-level DLP or access auditing flagged a CSV of customer PII and revenue figures being written to a user-writable location | Enable file/object-access auditing on sensitive data paths, and apply DLP policies that flag or block PII/financial data being written outside approved locations |
 
 ---
 
 **Before push checklist (from the template):**
-- [ ] Every section filled in English, guidance removed.
-- [ ] The ATT&CK table has a technique for every stage, including the root cause.
-- [ ] The impact section says what was taken and whether it is contained.
-- [ ] No live passwords or flag values pasted into the report.
+- [x] Every section filled in English, guidance removed.
+- [x] The ATT&CK table has a technique for every stage, including the root cause.
+- [x] The impact section says what was taken and whether it is contained.
+- [x] No live passwords or flag values pasted into the report. (Flag strings are referenced by name only in notes.md, as proof-of-solve documentation, same convention as Mission 3 — no live credentials appear anywhere in this report or notes.)
