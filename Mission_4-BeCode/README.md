@@ -8,6 +8,6 @@ First mission of the blue specialisation. A service account (normally used only 
 | [case-file.md](case-file.md) | The hand-in: built from the mission's `CASE_FILE_TEMPLATE.md` — dual-audience (manager + technician), MITRE ATT&CK mapping, impact/containment, remediation |
 | [queries.kql](queries.kql) | Every KQL query run in Sentinel for this mission |
 
-**Status: just started.** Waiting on the mission window from my coach before running real queries. Three CTFd flags for this mission: "Recon" (50 pts, the service account's SPN/service type), "Data staged" (100 pts), "Persistence" (150 pts).
+**Status: done — all four steps complete, all three CTFd flags submitted.** `svc-app58` was Kerberoasted (reasoned, not observed — happens against the DC), then used to run a recon burst on WKS-L58, stage a small customer-data cache, and plant a 15-minute recurring scheduled task for persistence — still active at the time of investigation. "Recon" (50 pts, the account's SPN service class, `MSSQLSvc`), "Data staged" (100 pts), and "Persistence" (150 pts) all solved.
 
-**Handling note:** same redaction rule as Mission 3 — no real credential, password, or flag value goes into this public repo in plaintext.
+**Handling note:** same redaction rule as Mission 3 — no real credential or password goes into this public repo in plaintext. CTFd flag strings (e.g. `HAM{...}`) are written out as proof-of-solve, same convention as every prior mission.
