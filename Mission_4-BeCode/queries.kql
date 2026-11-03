@@ -1,7 +1,9 @@
 // Mission 04: the KQL I ran in Sentinel → Logs
-// Times in UTC. Scoped to my own workstation and the mission window my coach gave me.
+// Times in UTC. Scoped to my own workstation (WKS-L58) and the mission window
+// ("started yesterday afternoon" — confirmed below as 2026-11-02 from the first
+// anomalous logon).
 // Stage 0 (the Kerberoasting root cause) happens against the DC, not my workstation,
-// and my Sentinel doesn't watch the DC yet — so it will never appear here by design.
+// and my Sentinel doesn't watch the DC yet — so it never appears here, by design.
 
 // Is my machine still sending? (check before trusting "nothing found")
 Heartbeat
@@ -11,36 +13,74 @@ Heartbeat
 // ---------------------------------------------------------------------------
 // Step 1: the service-account logon that should not exist
 // ---------------------------------------------------------------------------
-// TODO once the mission window is known. Starting point: look at every 4624 on
-// my workstation inside the window, set aside my own normal sign-ins, and look
-// for an account whose name points at a service rather than a person, on a
-// logon type a service account shouldn't normally use interactively.
+// Every 4624 on my workstation, set aside my own normal sign-ins and the
+// machine's own background/service logons, looking for an account whose name
+// points at a service rather than a person.
+// Result: HAMILTON\svc-app58, LogonType 4 (Batch — the type scheduled tasks
+// use, never a human sign-in type), first seen 2026-11-02 13:41:48.822 UTC.
 
-// SecurityEvent
-// | where Computer has "WKS-L58"
-// | where EventID == 4624
-// | where TimeGenerated between (datetime(TODO) .. datetime(TODO))
-// | project TimeGenerated, Account, LogonType, IpAddress, AuthenticationPackageName
-// | order by TimeGenerated asc
+SecurityEvent
+| where Computer has "WKS-L58"
+| where EventID == 4624
+| where Account has "svc-app58"
+| project TimeGenerated, Account, LogonType, IpAddress, AuthenticationPackageName
+| order by TimeGenerated asc
 
 // ---------------------------------------------------------------------------
 // Step 2: what the account ran (process creation, full command line)
 // ---------------------------------------------------------------------------
 // Same event type as Mission 2's command-line reconstruction, filtered to the
-// account found in Step 1.
+// account found in Step 1. Grouped to distinct command lines (rather than all
+// 101 raw rows) since the same handful of commands repeats via conhost.exe
+// helper spawns.
+// Result: a single ~1.5s burst of situational-awareness commands at
+// 2026-11-02 13:41:49-50 UTC — whoami, whoami /all, net user svc-app58,
+// net localgroup administrators, ipconfig /all — each with ~50ms gaps,
+// too fast for a human typing: scripted, not interactive.
 
-// SecurityEvent
-// | where Computer has "WKS-L58"
-// | where EventID == 4688
-// | where Account has "TODO"
-// | project TimeGenerated, Account, NewProcessName, CommandLine, ParentProcessName
-// | order by TimeGenerated asc
+SecurityEvent
+| where Computer has "WKS-L58"
+| where EventID == 4688
+| where Account has "svc-app58"
+| summarize Count=count(), First=min(TimeGenerated), Last=max(TimeGenerated) by CommandLine
+| order by First asc
+
+// ---------------------------------------------------------------------------
+// Step 3: data staged — no Sentinel side
+// ---------------------------------------------------------------------------
+// Not observable here: the staged file (customers CSV, see notes.md) is a
+// filesystem artifact, not a logged event, and per-file access/write auditing
+// isn't enabled in this workspace. Found by direct inspection of the WKS-L58
+// desktop over RDP, not KQL — noted here so the case file doesn't read like a
+// missed query.
 
 // ---------------------------------------------------------------------------
 // Step 4: persistence — scheduled task creation
 // ---------------------------------------------------------------------------
+// The event that should show a task being *created* (4698, "Other Object
+// Access Events") doesn't exist anywhere in this workspace — confirmed with
+// no Computer filter and a 30-day window, so this isn't a missed scope, it's
+// an audit-policy gap in this lab (worth its own line in the case file).
+//
 // SecurityEvent
-// | where Computer has "WKS-L58"
 // | where EventID == 4698
-// | project TimeGenerated, SubjectUserName, TaskName, TaskContent
-// | order by TimeGenerated asc
+// | count
+// --> 0 rows, every time.
+//
+// Fell back to proving persistence through what Sentinel *does* capture: the
+// recurring LogonType-4 (Batch) logon itself. Clean ~900s (15-minute) cadence,
+// 96 runs, starting at the moment of compromise and still firing at query
+// time — proof the task is active, even without its creation event.
+
+SecurityEvent
+| where Computer has "WKS-L58"
+| where EventID == 4624
+| where Account has "svc-app58"
+| where LogonType == 4
+| summarize Runs=count(), First=min(TimeGenerated), Last=max(TimeGenerated)
+
+// Confirmed directly on WKS-L58 (not via Sentinel): Get-ScheduledTask shows
+// two tasks running as svc-app58 — M4-SvcApp58-Persistence (recurring every
+// 15 minutes, writes the Persistence flag to a log file) and
+// M4-SvcApp58-Session (one-shot, ran once at 2026-11-02 14:41:41, timing
+// matching the Step 3 staged-data file — likely the task that did the staging).
