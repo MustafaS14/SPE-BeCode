@@ -6,6 +6,7 @@ My work for the BeCode SPE missions, one folder per mission.
 |---|---|---|
 | [Mission_1-BeCode](Mission_1-BeCode) | Mission 01: Sentinel lab and CTF on hamilton.corp | Runbook (Arc, AMA, DCRs), CTF notes, intrusion detection report, KQL queries, analytics rule |
 | [Mission_2-BeCode](Mission_2-BeCode) | Mission 02: Your first intrusion | Done — all five flags accepted. Stretch questions still open |
-| [Mission_3-BeCode](Mission_3-BeCode) | Mission 03: Locked out | Just started |
+| [Mission_3-BeCode](Mission_3-BeCode) | Mission 03: Locked out | Done — all five steps complete, all CTFd flags submitted |
+| [Mission_4-BeCode](Mission_4-BeCode) | Mission 04: A service account goes rogue | Just started |
 
 Mission 1 was first published in its own repo, [MustafaS14/Mission_1-BeCode](https://github.com/MustafaS14/Mission_1-BeCode) (archived), which keeps its full commit history.
