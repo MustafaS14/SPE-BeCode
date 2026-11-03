@@ -1,0 +1,46 @@
+// Mission 04: the KQL I ran in Sentinel → Logs
+// Times in UTC. Scoped to my own workstation and the mission window my coach gave me.
+// Stage 0 (the Kerberoasting root cause) happens against the DC, not my workstation,
+// and my Sentinel doesn't watch the DC yet — so it will never appear here by design.
+
+// Is my machine still sending? (check before trusting "nothing found")
+Heartbeat
+| where Computer startswith "WKS-L58"
+| summarize LastSeen = max(TimeGenerated)
+
+// ---------------------------------------------------------------------------
+// Step 1: the service-account logon that should not exist
+// ---------------------------------------------------------------------------
+// TODO once the mission window is known. Starting point: look at every 4624 on
+// my workstation inside the window, set aside my own normal sign-ins, and look
+// for an account whose name points at a service rather than a person, on a
+// logon type a service account shouldn't normally use interactively.
+
+// SecurityEvent
+// | where Computer has "WKS-L58"
+// | where EventID == 4624
+// | where TimeGenerated between (datetime(TODO) .. datetime(TODO))
+// | project TimeGenerated, Account, LogonType, IpAddress, AuthenticationPackageName
+// | order by TimeGenerated asc
+
+// ---------------------------------------------------------------------------
+// Step 2: what the account ran (process creation, full command line)
+// ---------------------------------------------------------------------------
+// Same event type as Mission 2's command-line reconstruction, filtered to the
+// account found in Step 1.
+
+// SecurityEvent
+// | where Computer has "WKS-L58"
+// | where EventID == 4688
+// | where Account has "TODO"
+// | project TimeGenerated, Account, NewProcessName, CommandLine, ParentProcessName
+// | order by TimeGenerated asc
+
+// ---------------------------------------------------------------------------
+// Step 4: persistence — scheduled task creation
+// ---------------------------------------------------------------------------
+// SecurityEvent
+// | where Computer has "WKS-L58"
+// | where EventID == 4698
+// | project TimeGenerated, SubjectUserName, TaskName, TaskContent
+// | order by TimeGenerated asc
