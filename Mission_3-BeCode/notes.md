@@ -28,6 +28,8 @@
 
 998 other ports in the top-1000 list: filtered. OS fingerprint: Windows.
 
+**Mission 3 CTFd flag — Recon (50 pts):** `HAM{microsoft-ds}` — this was solved earlier in the mission (before these notes were written up properly) but the flag text itself got lost track of along the way, and `HAM{anon_smb_seat58}` was mistakenly tried against this card instead, twice, without success. Revisited after Mission 4 and confirmed: the flag is nmap's own service name for port 445 (`microsoft-ds?`, the SMB service), straight out of the Step 1 scan table above — not seat-specific, same pattern as Mission 4's unsuffixed Recon flag (`HAM{mssqlsvc}`).
+
 **Sentinel side:** none expected — a port scan from off-box against listening services doesn't generate a Windows Security event on its own. Noted here so the case file doesn't look like a gap.
 
 ---
