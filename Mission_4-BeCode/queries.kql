@@ -84,3 +84,41 @@ SecurityEvent
 // 15 minutes, writes the Persistence flag to a log file) and
 // M4-SvcApp58-Session (one-shot, ran once at 2026-11-02 14:41:41, timing
 // matching the Step 3 staged-data file — likely the task that did the staging).
+
+// =============================================================================
+// Part 2: attacking svc-app58 myself (Kerberoasting, hands-on)
+// =============================================================================
+// Steps 5-7 (SPN enumeration, TGS ticket request, offline crack) all happen on
+// my own laptop / against the DC over Tailscale, and are not observable from
+// this workspace by design (see notes.md for why each one specifically isn't
+// logged here, or is logged only on the DC). Only Steps 8-9 touch WKS-L58.
+
+// ---------------------------------------------------------------------------
+// Step 9a: my own Step 8 sign-on as svc-app58, vs. Part 1's intruder sign-on
+// ---------------------------------------------------------------------------
+// Grouped comparison across every 4624 for this account, by LogonType and
+// IpAddress, to put both footprints side by side in one result.
+// Result:
+//   LogonType 10 (RemoteInteractive), IP 10.50.0.1, Count 2  -> my RDP sign-on (Step 8)
+//   LogonType 3  (Network),           IP 10.50.0.1, Count 1  -> session activity during that RDP sign-on
+//   LogonType 4  (Batch),             IP -,          Count 96 -> Part 1's intruder persistence task (still firing)
+
+SecurityEvent
+| where EventID == 4624
+| where Account has "svc-app58"
+| summarize Count=count(), First=min(TimeGenerated), Last=max(TimeGenerated) by LogonType, IpAddress, Account
+
+// ---------------------------------------------------------------------------
+// Step 9b: looking for the Step 6 ticket-request event (4769) on WKS-L58
+// ---------------------------------------------------------------------------
+// Result: 0 rows, every time, over a 7-day window. Expected: EventID 4769
+// (Kerberos Service Ticket Requested) is logged by the domain controller that
+// issues the ticket, not by the workstation the ticket is later used against.
+// This workspace collects Security events from WKS-L58 only, so there is
+// nothing for it to have captured even in principle -- a collection-scope
+// gap, not a missed query (same category as Part 1's Stage 0 and the 4698 gap).
+
+SecurityEvent
+| where EventID == 4769
+| where Computer has "WKS-L58"
+| where TimeGenerated > ago(7d)
