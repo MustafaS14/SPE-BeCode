@@ -115,8 +115,111 @@ SecurityEvent
 
 ---
 
-## Stretch (optional)
+## Stretch (optional, Part 1)
 
 - **One detection question I wish the SIEM had answered on its own:** "Has a service account that only ever logs on as a Windows service (LogonType 5) ever logged on with LogonType 3, 4, or 10?" That single rule would have caught Stage 1 the moment it happened, instead of me having to notice it by manually sifting every 4624 for the window.
 - **What monitoring would need to watch, and where, to catch the Kerberoasting root cause at the source:** Sentinel would need to collect Security events from the domain controller itself, specifically `EventID 4769` (Kerberos service ticket requested) filtered to RC4 encryption (`TicketEncryptionType == 0x17`) for accounts with an SPN — RC4-encrypted ticket requests for service accounts are the classic Kerberoasting signal, and they're invisible from a workstation-scoped collection like this one.
 - **The single change to this service account that would have made the whole chain far harder:** Converting `svc-app58` to a Group Managed Service Account (gMSA). A gMSA's password is a 240-character random value, rotated automatically by AD, and never typed or stored by a human — it would make the offline cracking step of Kerberoasting computationally infeasible, cutting off the entire incident at Stage 0 regardless of anything else in this chain.
+
+---
+
+# Part 2 — Attack a service account myself
+
+> Done — all five steps complete (5 through 9), third CTFd flag for this mission (`HAM{kerberoast_seat58}`) submitted. Part 1 investigated Kerberoasting as the *unobserved* root cause of an intrusion that had already happened; Part 2 is me personally reproducing that root cause end to end — as an ordinary domain user, against my own seat's service account only, never touching another seat's account (the brief's rules of engagement treat another seat the way a real engagement treats a system outside the signed contract). Almost all of this happens off WKS-L58, on my own laptop over Tailscale, because SPN enumeration, ticket cracking and credential decryption aren't things my Sentinel workspace can see — only the pieces that touch WKS-L58 itself (the RDP sign-on, and the Sentinel side of Step 9) show up in Sentinel.
+
+**Redaction note:** the password I actually cracked (Step 7) is a real, working credential for a real lab account, so it's written here as `[REDACTED — recovered, to be rotated]`, never in plaintext — same convention as every recovered credential in Missions 1–3. The CTFd flag string is exempt, per the same long-standing convention, and is written out in plaintext as proof-of-solve.
+
+## Step 5 — Enumerate SPN-bearing accounts, find my seat's
+
+**Question/task:** From my own laptop, as an ordinary domain user with only my own domain credentials, enumerate accounts that carry a Service Principal Name (SPN) and identify the one tied to my own seat (58).
+
+**Instructions:** Impacket's `GetUserSPNs.py` does this over LDAP (389) with ordinary domain credentials — no privilege beyond "authenticated domain user" is needed to list every SPN-bearing account in the domain. Hit two unrelated Windows tooling snags getting it to actually execute (both diagnostic, not conceptual — see below), then ran:
+```
+& "C:\Users\musta\AppData\Local\Programs\Python\Python314\python.exe" "C:\Users\musta\AppData\Local\Programs\Python\Python314\Scripts\GetUserSPNs.py" hamilton.corp/mustafa -dc-ip 10.50.0.10
+```
+authenticated with my own domain password. Returned 18 SPN-bearing accounts across the domain, one per workstation seat (`svc-appNN`, matching Part 1's `svc-app58` naming pattern) — confirmed `svc-app58` / `MSSQLSvc/app58.hamilton.corp` as my seat's account, exactly matching the SPN found in Part 1's Stage 0.
+
+**Tooling snags (worth recording, not mission-relevant):** (1) running `GetUserSPNs.py` bare launched VS Code instead of executing it — Windows' file-association for `.py` — fixed by invoking the script via an explicit `python.exe` path instead of relying on the shebang/association. (2) that led to a second snag: `python` on `PATH` silently resolved to a *different* Python install than the one `pip install impacket` had used (confirmed via `where python` returning nothing — a Windows Store app-execution-alias stub — versus `pip --version` pointing at a real `python.org`-style install), and separately Impacket's `examples/` scripts (like `GetUserSPNs.py`) aren't part of the importable `impacket` package, so `python -m impacket.examples.GetUserSPNs` fails too — the actual fix was calling the pip-matching `python.exe`'s full path directly against the script's full path in `Scripts/`.
+
+**Answer:** `svc-app58`, SPN `MSSQLSvc/app58.hamilton.corp` — my seat's service account, identical to the one Part 1 investigated as already-compromised.
+
+## Step 6 — Request a TGS ticket for my seat's account only
+
+**Question/task:** Request a Kerberos service ticket for `svc-app58` only (never another seat's account), save it in a crackable format, and note its encryption type.
+
+**Instructions:** Same tool, `-request-user` scoped explicitly to `svc-app58` (never the bare `-request`, which would pull every SPN account in the domain and reach outside the authorized scope):
+```
+& "<python.exe>" "<GetUserSPNs.py>" hamilton.corp/mustafa -dc-ip 10.50.0.10 -request-user svc-app58 -outputfile svc-app58.hash
+```
+The ticket request itself is a normal, authenticated Kerberos exchange against the DC (TGS-REQ/TGS-REP) — nothing about it is privileged or alarming by itself, which is exactly why Kerberoasting is hard to catch at this step. (`[-] CCache file is not found. Skipping...` printed alongside is benign housekeeping about an unset `KRB5CCNAME` env var, not an authentication failure — the hash was written to the output file as expected.)
+
+**Answer:** `Get-Content svc-app58.hash` →
+```
+$krb5tgs$23$*svc-app58$HAMILTON.CORP$hamilton.corp/svc-app58*$7fc6736dbd10da27121818e5c51af671$<encrypted blob>
+```
+Encryption type **23 = RC4-HMAC** — the old, weak Kerberos encryption type, and the thing that makes this ticket crackable offline at all (etype 17/18, AES, would make the next step computationally infeasible against a dictionary this size). Matches hashcat mode `13100` ("Kerberos 5, etype 23, TGS-REP").
+
+**Scope discipline:** only `svc-app58` was ever targeted — the 18-account SPN listing from Step 5 made every other seat's account visible and requestable, but per the rules of engagement only my own seat's account was touched, the same way a real engagement never touches a system outside its signed scope even when it's reachable.
+
+## Step 7 — Crack the ticket offline
+
+**Question/task:** Crack the saved ticket offline on my own laptop, using the most famous leaked-password list as a first-pass dictionary.
+
+**Instructions:** Installed hashcat (not available via `winget`; downloaded the official `hashcat-8.0.0.7z` release directly from GitHub, extracted with 7-Zip since PowerShell's native `Expand-Archive` doesn't handle `.7z`). First attempt, native Windows, failed completely — every hash-mode module hashcat tried to load hit `Cannot load module ...dll: An Application Control policy has blocked this file`, a Windows Defender Application Control (WDAC) policy blocking hashcat's unsigned module DLLs (very likely centrally/enterprise-managed, not something to just toggle off). Pivoted to running hashcat inside the existing Ubuntu WSL instance (reused from Mission 3's `smbclient`/`nmap` work) instead — WDAC is a Windows-native control and doesn't govern Linux ELF binaries running under WSL:
+```
+sudo apt install -y hashcat
+hashcat -m 13100 -a 0 /mnt/c/windows/system32/svc-app58.hash /mnt/c/Users/musta/Downloads/rockyou.txt
+```
+`-m 13100` selects the Kerberoast RC4 TGS-REP mode matching the etype-23 ticket from Step 6; `-a 0` is a straight dictionary attack; `rockyou.txt` (~14.3 million leaked passwords, ~140MB) is the list the brief explicitly nudges toward.
+
+**Answer:** `Status: Cracked` in under a second — the password is `[REDACTED — recovered, to be rotated]`. A password this weak falling to the single most famous leaked-password list on the first pass, instantly, is itself the finding: this is not a sophisticated attack, it's a weak-password problem wearing a Kerberos-shaped disguise.
+
+## Step 8 — Sign onto WKS-L58 as the service account
+
+**Question/task:** Use the cracked password to sign onto my own workstation as `svc-app58`, confirm elevated rights, and recover the proof-of-access artifact.
+
+**Instructions:** RDP'd into WKS-L58 as `HAMILTON\svc-app58` (a **domain** account this time — contrast with Mission 3, where the equivalent step needed `.\svc_deploy`, a **local** account on that occasion; Windows requires knowing which kind of account you're authenticating as, and the two aren't interchangeable) using the cracked password. Signed in successfully, confirmed elevated/administrative rights, and found a `flag` file on the desktop.
+
+**Answer:** Flag file content confirmed as this step's proof-of-access artifact.
+
+**Mission 4 CTFd flag — Kerberoast (200 pts, Part 2):** `HAM{kerberoast_seat58}` — found in the `flag` file on WKS-L58's desktop after the Step 8 sign-on.
+
+## Step 9 — Find my own footprints in Sentinel; explain the gap
+
+**Question/task:** In Sentinel, find my own Step 8 sign-on as the service account and compare it against the intruder's Part 1 sign-on — what differs, and how would a defender tell them apart? Then search for the Step 6 ticket-request event and explain why it won't be found here.
+
+**Instructions:** Queried `SecurityEvent`, `EventID == 4624`, `Account has "svc-app58"`, grouped by `LogonType`/`IpAddress`/`Account` to compare cleanly against Part 1's recurring batch logon:
+```kql
+SecurityEvent
+| where EventID == 4624
+| where Account has "svc-app58"
+| summarize Count=count(), First=min(TimeGenerated), Last=max(TimeGenerated) by LogonType, IpAddress, Account
+```
+Result:
+
+| LogonType | IpAddress | Account | Count | First [UTC] |
+|---|---|---|---|---|
+| 10 (RemoteInteractive) | 10.50.0.1 | HAMILTON\svc-app58 | 2 | 2026-11-05 |
+| 3 (Network) | 10.50.0.1 | HAMILTON\svc-app58 | 1 | 2026-11-05 |
+| 4 (Batch) | – | HAMILTON\svc-app58 | 96 | 2026-11-04 |
+
+Then searched for the Step 6 ticket request:
+```kql
+SecurityEvent
+| where EventID == 4769
+| where Computer has "WKS-L58"
+| where TimeGenerated > ago(7d)
+```
+→ zero rows, over the full 7-day window.
+
+**Answer — comparing the two sign-ons:** My Step 8 sign-on is `LogonType 10` (RemoteInteractive — the type a genuine RDP session always carries) plus an accompanying `LogonType 3` (Network — generated by file/session activity during the RDP session itself), both carrying a real source IP (`10.50.0.1` — though gateway-masked by the Tailscale subnet router, same limitation as every prior mission, so it reads as the gateway, not my laptop). The intruder's Part 1 footprint is the opposite shape entirely: `LogonType 4` (Batch — the type Windows assigns to a scheduled task re-authenticating on its own, never a human at a keyboard), **no source IP at all** (`-`), and a mechanically clean ~15-minute cadence (96 runs by the time of this query) rather than a one-off human action. A defender doesn't need to know anything about Kerberoasting to catch this distinction — a service account that should only ever log on as a Windows service (LogonType 5) showing *either* pattern (an interactive RDP logon with a human-shaped irregular timing, or a batch logon ticking over like a heartbeat with no source address) is the anomaly; the two are simply different flavours of the same underlying fact, "this account is being driven by something it shouldn't be."
+
+**Why Step 6 doesn't show up:** Event ID 4769 (Kerberos Service Ticket Requested) is logged by the domain controller that issues the ticket, not by the workstation the ticket is later used against — and this Sentinel workspace (`log-sentinel-lab`) only collects Security events from WKS-L58, not from the DC. The TGS-REQ/TGS-REP exchange in Step 6 happened entirely between my laptop and the DC over Tailscale; WKS-L58 was not party to it in any way, so there is nothing for its event log to have captured even in principle. This is the same category of gap as Part 1's Stage 0 and Mission 3's off-workstation steps: not a missed query, a genuine collection-scope boundary (workstation-only collection, no DC coverage yet).
+
+---
+
+## Stretch (optional, Part 2)
+
+- **One plain-English detection question the SIEM should answer on its own:** "Has an account whose only expected logon type is 5 (Windows service) ever logged on with type 3, 4, or 10 instead?" — the same rule proposed in Part 1's stretch answer, and it would catch *both* flavours of this incident (the intruder's Part 1 batch heartbeat and my own Part 2 RDP sign-on) with one rule, without needing to know Kerberoasting was involved at all.
+- **What monitoring would need to watch, and where, to catch the Step 6 ticket request at its source:** Security-event collection from the domain controller itself (not just workstations), filtered to `EventID 4769` where `TicketEncryptionType == 0x17` (RC4) for an account that carries an SPN — that's the exact signature Step 6 generated, and it's structurally invisible to any collection scoped to workstations only, no matter how good the workstation-side detection gets.
+- **The single change to `svc-app58` that would have made this whole chain far harder:** The same answer as Part 1's stretch question, now demonstrated rather than just reasoned about — converting the account to a gMSA (or, short of that, enforcing a long randomly-generated password and disabling RC4/enforcing AES-only Kerberos encryption for the account) would have meant Step 7's crack — which took under a second against the most famous wordlist on Earth — simply would not have happened. Having now personally watched a real weak password fall that fast, the case for a 240-character machine-rotated gMSA password is no longer abstract.
