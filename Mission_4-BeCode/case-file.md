@@ -47,8 +47,36 @@ A SQL Server service account (`svc-app58`) was compromised, almost certainly by 
 
 ---
 
+# Part 2 — Reproducing the theft myself
+
+> The CTFd flags keep me honest about reaching each stage — they're the engine, not the hand-in. This section is the hand-in for Part 2: I personally performed the Kerberoasting attack that Part 1 could only reason about as an unobserved root cause, against my own seat's service account (`svc-app58`) only, as an ordinary domain user with no elevated access. Remediation below is no longer theoretical — it is written having now watched the weak password fall in under a second.
+
+## 6. Attack narrative — what I did, in my own words
+
+Acting as an ordinary authenticated domain user (`hamilton.corp\mustafa`, no elevated rights), I enumerated every SPN-bearing account in the domain over LDAP, identified `svc-app58` as my own seat's account (same SPN, `MSSQLSvc/app58.hamilton.corp`, that Part 1 found already compromised), and requested a Kerberos service ticket for that account only. The ticket came back RC4-encrypted (etype 23) — weak enough to attack offline. I cracked it in under a second against `rockyou.txt`, the best-known leaked-password list, recovering a real working password. I used that password to sign onto WKS-L58 as `HAMILTON\svc-app58` over RDP, confirmed elevated access, and recovered the mission's third flag. At no point did I touch another seat's account, even though the same enumeration step made all 18 of them visible and requestable — the rules of engagement treat another seat exactly as a real engagement treats a system outside its signed contract: visible, reachable, and explicitly off-limits.
+
+## 7. MITRE ATT&CK mapping — Part 2 (with defender-visibility notes)
+
+| Step | Tactic | Technique (ID + name) | What I did | Defender visibility |
+|---|---|---|---|---|
+| 5 — SPN enumeration | Discovery | T1087.002 — Account Discovery: Domain Account (via LDAP query for SPNs) | Queried the DC's LDAP as an ordinary authenticated domain user to list all 18 SPN-bearing accounts | **Invisible to this workspace by design**: an LDAP query to the DC generates no Windows Security event by itself, and this collection doesn't cover the DC regardless. A DC-side LDAP-query audit policy (or a SACL on the relevant AD objects) would be the only way to see this at all. |
+| 6 — TGS ticket request | Credential Access | T1558.003 — Steal or Forge Kerberos Tickets: Kerberoasting | Requested a Kerberos service ticket for `svc-app58` only, via an ordinary (unprivileged, unaudited-by-default) TGS-REQ/TGS-REP exchange | **Logged, but not here**: generates Event ID 4769 (Kerberos Service Ticket Requested) — on the domain controller that issued it, not on WKS-L58. This workspace collects Security events from WKS-L58 only, so this step is a genuine collection-scope gap, not a missed query (confirmed: zero 4769 rows for WKS-L58 over 7 days). |
+| 7 — offline crack | Credential Access | T1110.002 — Brute Force: Password Cracking | Cracked the RC4 ticket offline, on my own laptop, against `rockyou.txt` | **Fully invisible to any SIEM**: happens entirely offline, on attacker-controlled hardware, generating no network traffic or host events anywhere in the environment. The only way to ever see this coming is to make it fail — i.e., control the password strength/encryption type, not try to detect the cracking itself. |
+| 8 — use the cracked credential | Lateral Movement / Initial Access | T1078.002 — Valid Accounts: Domain Accounts | Signed onto WKS-L58 as `HAMILTON\svc-app58` via RDP using the cracked password; confirmed elevated rights | **Fully visible**: Event ID 4624, LogonType 10 (RemoteInteractive) plus an accompanying LogonType 3 (Network), both from source `10.50.0.1` (Tailscale-gateway-masked). Compare against Part 1's intruder footprint for the same account: LogonType 4 (Batch), no source IP at all, clean ~15-minute cadence — different shape, same underlying anomaly: a service account logging on in a way it never should. |
+
+## 8. Remediation, now concrete
+
+Part 1's remediation table proposed a gMSA or a long random password for `svc-app58` based on reasoning about how Kerberoasting works. Having now performed the attack myself:
+
+- **The crack took under one second**, on a first pass, against the single most famous leaked-password list that exists. This was not a sophisticated, resource-intensive attack — it is the floor of what Kerberoasting requires once an SPN account has a weak password and RC4 encryption enabled. The fix (gMSA, or at minimum a long randomly-generated password with RC4 disabled / AES-only enforced) is not a hardening nice-to-have; it is the only thing standing between "any authenticated domain user" and full compromise of the account, with no alarm raised at the moment of theft.
+- **The theft itself (Steps 5–7) is structurally unobservable from a workstation-only Sentinel collection**, no matter how well-tuned the workstation-side detection is. Steps 5 and 7 generate no logged event anywhere in this environment by their nature (an LDAP read and an offline crack); Step 6 does generate an event (4769), but on the DC, which this workspace doesn't collect from. Concrete fix: onboard the domain controller's Security event log into this Sentinel workspace, specifically to catch `EventID 4769` with `TicketEncryptionType == 0x17` (RC4) for SPN-bearing accounts — that single rule is the earliest point in this entire chain (Part 1 and Part 2 combined) where the theft itself, not just its aftermath, could be caught.
+- **Only Step 8 (using the stolen credential) is visible today**, and only because the account then does something a SQL Server service account has no business doing — an interactive or batch logon at all. The detection rule proposed in both Parts' stretch answers (alert on any logon type other than 5 for an account whose only expected use is a Windows service logon) is the one rule that would have caught this entire two-part incident — Part 1's intruder and my own Part 2 reproduction alike — using only what this workspace already collects, with no DC onboarding required.
+
+---
+
 **Before push checklist (from the template):**
 - [x] Every section filled in English, guidance removed.
 - [x] The ATT&CK table has a technique for every stage, including the root cause.
 - [x] The impact section says what was taken and whether it is contained.
 - [x] No live passwords or flag values pasted into the report. (Flag strings are referenced by name only in notes.md, as proof-of-solve documentation, same convention as Mission 3 — no live credentials appear anywhere in this report or notes.)
+- [x] Part 2: the cracked `svc-app58` password is redacted everywhere in notes.md; only the CTFd flag string is in plaintext, per the same exemption used throughout this repo.
