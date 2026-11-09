@@ -74,10 +74,161 @@ SecurityEvent
 // service-ticket request is abnormal enough in this domain to hunt on directly.
 
 // ---------------------------------------------------------------------------
-// Step 4: replay + ingestion delay -- pending
+// Step 4: replay + ingestion delay
 // ---------------------------------------------------------------------------
+// Replayed only the ticket-request step (own seat's svc-app58, no cracking) from
+// my own laptop at ~2026-11-09 11:19 UTC via the same Impacket command as Mission 4
+// Part 2's Step 6. Then re-ran the Step 2 query narrowed to the last 30 minutes:
+
+SecurityEvent
+| where TimeGenerated > ago(30m)
+| where EventID == 4769
+| where Computer has "DC01"
+| extend Parsed = parse_xml(EventData).EventData.Data
+| mv-expand Parsed
+| extend Name = tostring(Parsed["@Name"]), Value = tostring(Parsed["#text"])
+| summarize Fields = make_bag(pack(Name, Value)) by TimeGenerated, EventRecordId
+| evaluate bag_unpack(Fields)
+| where ServiceName has "svc-app58"
+| project TimeGenerated, TargetUserName, ServiceName, TicketEncryptionType, IpAddress
+| order by TimeGenerated desc
+
+// Result: TimeGenerated 2026-11-09 11:19:03.546 UTC, mustafa@HAMILTON.CORP ->
+// svc-app58, 0x17 (RC4), ::ffff:10.50.0.1 (Tailscale gateway again). The event was
+// already queryable ~25-30s after the replay -- the very first query against the
+// workspace found it. Ingestion delay: well under a minute. This justifies a
+// 5-minute rule frequency with a lookback slightly longer than 5 minutes (not
+// exactly equal -- avoids missing an event that lands right at the query-window
+// boundary, per the brief's warning).
 
 // ---------------------------------------------------------------------------
-// Steps 5-8: generalized detection query, analytics rule, proof-of-fire,
-// triage of a not-self-launched attack -- pending
+// Step 5: generalize to a detection query, review false positives
 // ---------------------------------------------------------------------------
+// All 21 RC4 (0x17) events over the 90-day window, no seat/account/time filter --
+// reviewed to check for false positives before generalizing.
+SecurityEvent
+| where TimeGenerated > ago(90d)
+| where EventID == 4769
+| where Computer has "DC01"
+| extend Parsed = parse_xml(EventData).EventData.Data
+| mv-expand Parsed
+| extend Name = tostring(Parsed["@Name"]), Value = tostring(Parsed["#text"])
+| summarize Fields = make_bag(pack(Name, Value)) by TimeGenerated, EventRecordId
+| evaluate bag_unpack(Fields)
+| where TicketEncryptionType == "0x17"
+| project TimeGenerated, TargetUserName, ServiceName, IpAddress
+| order by TimeGenerated asc
+
+// Result: 21 rows, all human accounts requesting svc-appNN tickets. Zero computer
+// accounts ($ suffix), zero krbtgt -- RC4 alone is a clean signal in this domain
+// with no observed false positives. Still added defensive exclusions below rather
+// than relying on that holding forever.
+
+// Generalized detection query -- this is what the Step 6 analytics rule runs.
+// Dropped every self-specific filter (seat/account/time); kept only the
+// encryption-type signal; excluded computer accounts and krbtgt defensively
+// (legitimate in some domains even though not observed here).
+SecurityEvent
+| where EventID == 4769
+| where Computer has "DC01"
+| extend Parsed = parse_xml(EventData).EventData.Data
+| mv-expand Parsed
+| extend Name = tostring(Parsed["@Name"]), Value = tostring(Parsed["#text"])
+| summarize Fields = make_bag(pack(Name, Value)) by TimeGenerated, EventRecordId
+| evaluate bag_unpack(Fields)
+| where TicketEncryptionType == "0x17"
+| where TargetUserName !endswith "$"
+| where TargetUserName != "krbtgt"
+| project TimeGenerated, TargetUserName, ServiceName, IpAddress, TicketEncryptionType
+
+// ---------------------------------------------------------------------------
+// Step 6: final analytics rule query (as saved in the "L58 - RC4 Kerberos
+// service ticket request (Kerberoasting)" scheduled rule)
+// ---------------------------------------------------------------------------
+// The Step 5 query, as typed into the rule wizard's "Set rule logic" editor,
+// tripped its static validator: 'where' operator: Failed to resolve column
+// or scalar expression named 'TicketEncryptionType' (and, once patched,
+// the same for TargetUserName). "View query results" proved the query runs
+// correctly regardless (13 rows, matching the manual hunt) -- the editor's
+// analyzer can't statically infer columns produced dynamically by
+// `evaluate bag_unpack(...)`. Unlike the earlier cosmetic version of this
+// warning seen during ad-hoc hunting, the wizard's Review + create step
+// actually blocks saving on it. Fix: wrap each bag_unpack-produced column
+// used downstream in column_ifexists("ColumnName", "") right after
+// bag_unpack -- its return type is statically known, so the analyzer stops
+// trying to resolve the dynamic column by name.
+SecurityEvent
+| where EventID == 4769
+| where Computer has "DC01"
+| extend Parsed = parse_xml(EventData).EventData.Data
+| mv-expand Parsed
+| extend Name = tostring(Parsed["@Name"]), Value = tostring(Parsed["#text"])
+| summarize Fields = make_bag(pack(Name, Value)) by TimeGenerated, EventRecordId
+| evaluate bag_unpack(Fields)
+| extend TicketEncryptionType = tostring(column_ifexists("TicketEncryptionType", "")), TargetUserName = tostring(column_ifexists("TargetUserName", "")), ServiceName = tostring(column_ifexists("ServiceName", "")), IpAddress = tostring(column_ifexists("IpAddress", ""))
+| where TicketEncryptionType == "0x17"
+| where TargetUserName !endswith "$"
+| where TargetUserName != "krbtgt"
+| project TimeGenerated, TargetUserName, ServiceName, IpAddress, TicketEncryptionType
+
+// Rule settings: Severity High, MITRE T1558.003 (Kerberoasting). Run every
+// 5 minutes, lookback 10 minutes (not equal -- avoids missing an event that
+// lands right at the query-window boundary; justified by Step 4's measured
+// <1 minute ingestion delay). Alert threshold: results > 0, "trigger an
+// alert for each event" (not grouped). Entity mapping: Account/FullName ->
+// TargetUserName, IP/Address -> IpAddress.
+
+// ---------------------------------------------------------------------------
+// Step 7: proof-of-fire -- replayed svc-app58 again, let the scheduled rule
+// (not an ad-hoc query) pick it up on its own cadence
+// ---------------------------------------------------------------------------
+// Raw event landed at 2026-11-09 11:19:03.546 UTC. Incident #3050/#3052
+// ("L58 - RC4 Kerberos service ticket request (Kerberoasting)") shows a
+// timeline entry "9 Nov 15:02:22 ... Detected by Microsoft Sentinel ...
+// Credential Access" with Entities mustafa@HAMILTON.CORP / ::ffff:10.50.0.1 --
+// the incident UI displays UTC+1, confirmed by comparing to a second replay
+// at 14:02:22.845 UTC lining up with a "15:02" incident entry. Caught well
+// inside the rule's 10-minute lookback.
+
+// ---------------------------------------------------------------------------
+// Step 8: triage -- who else is tripping this (domain-wide, unfiltered) rule
+// ---------------------------------------------------------------------------
+// The rule has no account filter by design, so it also fires on classmates'
+// own Mission 4/5 work. Pulled every RC4 (0x17) ticket request over the last
+// 24h, all accounts, to see the full pattern:
+SecurityEvent
+| where TimeGenerated > ago(24h)
+| where EventID == 4769
+| where Computer has "DC01"
+| extend Parsed = parse_xml(EventData).EventData.Data
+| mv-expand Parsed
+| extend Name = tostring(Parsed["@Name"]), Value = tostring(Parsed["#text"])
+| summarize Fields = make_bag(pack(Name, Value)) by TimeGenerated, EventRecordId
+| evaluate bag_unpack(Fields)
+| extend TicketEncryptionType = tostring(column_ifexists("TicketEncryptionType", "")), TargetUserName = tostring(column_ifexists("TargetUserName", "")), ServiceName = tostring(column_ifexists("ServiceName", "")), IpAddress = tostring(column_ifexists("IpAddress", ""))
+| where TicketEncryptionType == "0x17"
+| project TimeGenerated, TargetUserName, ServiceName, IpAddress, TicketEncryptionType
+| order by TimeGenerated desc
+
+// Result (17 rows): every requesting account maps to exactly one targeted
+// service account, and it's always that student's own seat:
+//   mustafa   -> svc-app58  (me, x2: the Step 4 and Step 7 replays)
+//   kien      -> svc-app66  (x8, incl. the 13:50:39 UTC event behind
+//                            incidents #3045/#3047 -- my rule catching
+//                            HIS replay, the Step 8 target)
+//   lakshmi   -> svc-app53  (x3)
+//   derya     -> svc-app59  (x2)
+//   training01 -> svc-app59 (x2, same target as derya -- consistent with
+//                            Mission 3's training01 being scoped near that
+//                            seat)
+// Source IP on every single row: ::ffff:10.50.0.1 (shared Tailscale gateway
+// -- no per-student attribution from IP alone, domain-wide).
+//
+// Judgment: classmate-replay-within-shared-workspace-rules, not an incident.
+// Kien's own-seat, steady-cadence, single-target pattern is exactly what
+// "everyone Kerberoasting their own seat's service account for this mission"
+// looks like from the DC's point of view. Already self-resolved (#3045) by
+// Kien. See notes.md Step 8 for the full first-line-analyst triage writeup,
+// including the double-alert quirk (#3045 + #3047 for what's apparently the
+// same 13:50:39 UTC event -- a lookback-wider-than-interval side effect, not
+// a detection gap).
