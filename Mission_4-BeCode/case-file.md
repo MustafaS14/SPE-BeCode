@@ -74,6 +74,118 @@ Part 1's remediation table proposed a gMSA or a long random password for `svc-ap
 
 ---
 
+# Part 3 — Catching it at the source (Mission 5)
+
+> Section 8 above proposed onboarding the domain controller's Security log into Sentinel specifically to catch Event ID 4769 with RC4 encryption. This section is that proposal, built and proven: a real scheduled analytics rule, in the new shared `log-hamilton` workspace, that catches the theft itself rather than its aftermath. No CTFd flag for this mission — this section is the hand-in.
+
+## 9. The detection rule
+
+```kql
+SecurityEvent
+| where EventID == 4769
+| where Computer has "DC01"
+| extend Parsed = parse_xml(EventData).EventData.Data
+| mv-expand Parsed
+| extend Name = tostring(Parsed["@Name"]), Value = tostring(Parsed["#text"])
+| summarize Fields = make_bag(pack(Name, Value)) by TimeGenerated, EventRecordId
+| evaluate bag_unpack(Fields)
+| extend TicketEncryptionType = tostring(column_ifexists("TicketEncryptionType", "")), TargetUserName = tostring(column_ifexists("TargetUserName", "")), ServiceName = tostring(column_ifexists("ServiceName", "")), IpAddress = tostring(column_ifexists("IpAddress", ""))
+| where TicketEncryptionType == "0x17"
+| where TargetUserName !endswith "$"
+| where TargetUserName != "krbtgt"
+| project TimeGenerated, TargetUserName, ServiceName, IpAddress, TicketEncryptionType
+```
+
+Saved in `log-hamilton` as a scheduled analytics rule named `L58 - RC4 Kerberos
+service ticket request (Kerberoasting)`.
+
+**Plain-English explanation:** Every Kerberos service-ticket request (Event ID
+4769) on the domain controller packs its useful fields — including the
+encryption type the ticket was issued with — into an XML blob rather than flat
+columns, so the query unpacks that blob first (`parse_xml` → `mv-expand` →
+`bag_unpack`). Once unpacked, the rule looks for any ticket issued with RC4
+encryption (`TicketEncryptionType == "0x17"`) requested by a real user account
+(excluding computer accounts, which end in `$`, and the built-in `krbtgt`
+account). RC4 is a legacy encryption type that's trivially crackable offline;
+in a modern domain almost nothing should still request it. Measured directly
+against this domain (Mission 5, Step 3): 8,132 ticket requests over 90 days
+used AES256, the modern default, versus 16 that used RC4 — RC4 is the rare,
+abnormal 0.2% of traffic, which is exactly why it's a clean signal to alert
+on rather than a noisy one. This is the earliest point in the entire Mission 4
+attack chain (Parts 1 and 2 combined) where the theft itself — not its
+aftermath — can be caught: it fires at the moment the ticket is requested, not
+when the cracked credential is later used to log on somewhere.
+
+**MITRE ATT&CK:** `T1558.003 — Steal or Forge Kerberos Tickets: Kerberoasting`
+(sub-technique of `T1558`, under the `Credential Access` tactic) — the same
+technique identified by reasoning in section 3 of Part 1, now detected
+directly rather than inferred.
+
+**False-positive exclusions and rationale:** The generalizing review (Mission
+5, Step 5) found 21 RC4 events over a 90-day window, all of them human
+accounts requesting tickets for `svc-appNN`-style service accounts — zero
+computer accounts, zero `krbtgt`. So in this domain, RC4 alone already has no
+observed false positives. Two defensive exclusions were added anyway, on the
+assumption that won't hold forever: computer accounts (`$` suffix) can
+legitimately request RC4 tickets in some AD configurations for backward
+compatibility, and `krbtgt` ticket activity is a different (and separately
+monitored) concern, not a Kerberoasting signal. Excluding both keeps the rule
+honest if the domain's RC4-usage pattern ever changes, without weakening the
+core signal today.
+
+**Run frequency and lookback, justified by measurement:** Runs every 5
+minutes with a 10-minute lookback — deliberately not equal to the run
+interval, to avoid missing an event that lands right at a query-window
+boundary. This is justified directly by a measured ingestion delay (Mission 5,
+Step 4): a replayed ticket request was queryable roughly 25-30 seconds after
+being generated — well under a minute. A 5-minute cadence with double that as
+lookback comfortably covers that real-world delay with margin to spare,
+without the lookback exceeding 2x the run interval (which would re-alert on
+the same event across three or more consecutive runs instead of at most two).
+
+**Proof it fires — my own replay:** Replayed the ticket-request step against
+my own seat's service account (`svc-app58`) a second time and let the rule's
+own schedule catch it, rather than finding it by hand. The raw event landed at
+`2026-11-09 11:19:03.546 UTC`. Incident `L58 - RC4 Kerberos service ticket
+request (Kerberoasting)` (workspace `log-hamilton`) recorded a timeline entry
+"Detected by Microsoft Sentinel ... Tactics: Credential Access", with Entities
+`mustafa@HAMILTON.CORP` and `::ffff:10.50.0.1` (the Tailscale gateway address
+used throughout Mission 4) — caught well inside the rule's lookback window, no
+manual query required.
+
+**Triage — an attack I didn't launch:** Because this rule intentionally has no
+account filter (it has to watch every ticket request domain-wide to do its
+job), it also fired on other students' own Mission 4/5 Kerberoasting work in
+the shared workspace. One clear case: an incident from this same rule with the
+entity `kien@HAMILTON.CORP`. Triaging it like a first-line analyst — requesting
+account, targeted service account, source address, count/pattern — against the
+raw log: `kien@HAMILTON.CORP` requested RC4 tickets eight separate times over
+the day, and every single one targeted `svc-app66` and nothing else — seat 66's
+own service account, not mine. The source address was the same shared Tailscale
+gateway every seat's traffic shows, so it offers no independent attribution,
+but the account and target together are unambiguous. The same one-account,
+one-target pattern held for every other classmate visible in that day's data
+(`lakshmi@HAMILTON.CORP` → only `svc-app53`, her own seat; `derya@HAMILTON.CORP`
+→ only `svc-app59`). Judgment: classmate-replay-within-shared-workspace-rules,
+not an incident — this is what "everyone Kerberoasting their own seat's service
+account for this mission" looks like from the DC's point of view, not a second
+attacker. No escalation performed; the classmate had already self-resolved the
+incident before I triaged it.
+
+**Remaining defender blind spots:** Every account in this shared domain routes
+through the same Tailscale-gateway source address, so IP alone can never
+distinguish one student's traffic from another's — attribution here depends
+entirely on the account name in the ticket request being trustworthy, which
+holds for a controlled class exercise but wouldn't hold against an attacker
+using a compromised or shared credential. And this rule only closes the
+Mission 4 gap for Kerberoasting specifically: section 8's broader proposal —
+alerting on any non-type-5 logon for an account that should only ever run a
+Windows service — remains the single rule that would catch this entire attack
+chain by its actual anomaly (a service account behaving like a user), rather
+than by one specific technique among several that could have gotten it there.
+
+---
+
 **Before push checklist (from the template):**
 - [x] Every section filled in English, guidance removed.
 - [x] The ATT&CK table has a technique for every stage, including the root cause.
