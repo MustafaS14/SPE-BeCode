@@ -1,0 +1,83 @@
+// Mission 05: the KQL I ran in the shared Sentinel workspace (log-hamilton) -> Logs
+// Times in UTC. This workspace collects Security events from the domain controller
+// (DC01), shared across the whole class -- so results here are domain-wide, not just
+// my own seat, unless filtered down.
+
+// Step 1: is the DC reporting into this workspace?
+Heartbeat
+| where Computer has "DC01"
+| summarize LastSeen = max(TimeGenerated)
+
+// ---------------------------------------------------------------------------
+// Step 2: find my own Kerberoasting ticket request (4769) at the source
+// ---------------------------------------------------------------------------
+// Event 4769 (Kerberos Service Ticket Requested) packs its useful fields into the
+// EventData column as a small XML document rather than flat SecurityEvent columns.
+// Reusable unpack pattern (the new skill this mission is built around):
+//
+//   SecurityEvent
+//   | where EventID == 4769
+//   | extend Parsed = parse_xml(EventData).EventData.Data
+//   | mv-expand Parsed
+//   | extend Name = tostring(Parsed["@Name"]), Value = tostring(Parsed["#text"])
+//   | summarize Fields = make_bag(pack(Name, Value)) by TimeGenerated, EventRecordId
+//   | evaluate bag_unpack(Fields)
+//
+// Field semantics (confirmed empirically, not obvious from the names): on a 4769,
+// TargetUserName is the REQUESTING account, ServiceName is the TARGETED account/SPN
+// -- the opposite direction from how these names work on a 4624 logon event.
+// Filtering on TargetUserName has "svc-app58" surfaces 495 unrelated rows: routine
+// AES256 (0x12) machine-ticket renewals from the still-firing Mission 4
+// M4-SvcApp58-Persistence scheduled task (svc-app58 as ticket *owner*, not target).
+// The correct filter for "someone requested a ticket targeting svc-app58" is
+// ServiceName has "svc-app58".
+
+SecurityEvent
+| where TimeGenerated > ago(90d)
+| where EventID == 4769
+| where Computer has "DC01"
+| extend Parsed = parse_xml(EventData).EventData.Data
+| mv-expand Parsed
+| extend Name = tostring(Parsed["@Name"]), Value = tostring(Parsed["#text"])
+| summarize Fields = make_bag(pack(Name, Value)) by TimeGenerated, EventRecordId
+| evaluate bag_unpack(Fields)
+| where ServiceName has "svc-app58"
+| project TimeGenerated, TargetUserName, ServiceName, TicketEncryptionType, IpAddress
+| order by TimeGenerated asc
+
+// Result: exactly one row -- mustafa@HAMILTON.CORP requesting a ticket for
+// svc-app58, 2026-11-05 11:36:38.661 UTC, TicketEncryptionType 0x17 (RC4),
+// IpAddress ::ffff:10.50.0.1 (the Tailscale gateway address, same masking pattern
+// observed throughout Mission 4). This is my own Mission 4 Part 2 Kerberoast, found
+// at the DC instead of reasoned about.
+
+// ---------------------------------------------------------------------------
+// Step 3: why it stands out -- encryption type across the whole domain
+// ---------------------------------------------------------------------------
+SecurityEvent
+| where TimeGenerated > ago(90d)
+| where EventID == 4769
+| where Computer has "DC01"
+| extend Parsed = parse_xml(EventData).EventData.Data
+| mv-expand Parsed
+| extend Name = tostring(Parsed["@Name"]), Value = tostring(Parsed["#text"])
+| summarize Fields = make_bag(pack(Name, Value)) by TimeGenerated, EventRecordId
+| evaluate bag_unpack(Fields)
+| summarize Count=count(), Accounts=dcount(TargetUserName), Services=dcount(ServiceName) by TicketEncryptionType
+| order by Count desc
+
+// Result: 8,132 AES256 (0x12) events across 41 accounts / 20 services (routine,
+// 99.8% of all traffic) vs. 16 RC4 (0x17) events across 7 accounts / 8 services
+// (0.2%) -- the rare, distinguishing signal. Matches Mission 4 Part 2's finding
+// that the cracked ticket was "etype 23" (decimal for RC4-HMAC = hex 0x17).
+// This is the heart of the detection rule: TicketEncryptionType == "0x17" on a
+// service-ticket request is abnormal enough in this domain to hunt on directly.
+
+// ---------------------------------------------------------------------------
+// Step 4: replay + ingestion delay -- pending
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Steps 5-8: generalized detection query, analytics rule, proof-of-fire,
+// triage of a not-self-launched attack -- pending
+// ---------------------------------------------------------------------------
