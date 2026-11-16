@@ -29,6 +29,7 @@ Played solo — helping other students is allowed, but flags are never shared.
 |---|---|
 | [writeups/warmup.md](writeups/warmup.md) | Warm-up category — all 4 challenges, CyberChef-style decoding done via equivalent one-line Python for each |
 | [writeups/email.md](writeups/email.md) | Email category — all 4 challenges, spotting the two malicious messages in `maildir.zip` and reading their headers |
+| [writeups/osint.md](writeups/osint.md) | OSINT category — the one challenge, reading `/Author` out of the PDF's raw `/Info` dictionary |
 
 ## Progress
 
@@ -40,7 +41,7 @@ Played solo — helping other students is allowed, but flags are never shared.
 | Network | 0 / 6 |
 | Disk | 0 / 5 |
 | Hunt | 0 / 3 |
-| OSINT | 0 / 1 |
+| OSINT | 1 / 1 |
 | Encoding | 0 / 1 |
 | Memory | 0 / 2 (bonus) |
 
