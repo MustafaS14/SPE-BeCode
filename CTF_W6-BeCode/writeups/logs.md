@@ -62,7 +62,10 @@ execution is `drop_persist.ps1`, whose Sysmon Event ID 1 `UtcTime` is
 `2026-11-12 08:26:00.009` — this is also the exact `StartBoundary` of the
 `\Microsoft\Windows\SyncHelper\Refresh` task it creates.
 
-**Flag:** `2026-11-12T08:26:00Z`
+**Flag:** `2026-11-12 08:26`
+
+(Plain `YYYY-MM-DD HH:MM`, no seconds, no `T`/`Z` — several ISO-8601 variants
+were tried and rejected before landing on this exact format.)
 
 ## Scheduled task name (100 pts)
 
