@@ -28,13 +28,14 @@ Played solo — helping other students is allowed, but flags are never shared.
 | File/folder | What's in it |
 |---|---|
 | [writeups/warmup.md](writeups/warmup.md) | Warm-up category — all 4 challenges, CyberChef-style decoding done via equivalent one-line Python for each |
+| [writeups/email.md](writeups/email.md) | Email category — all 4 challenges, spotting the two malicious messages in `maildir.zip` and reading their headers |
 
 ## Progress
 
 | Category | Solved / total |
 |---|---|
 | Warm-up | 4 / 4 |
-| Email | 0 / 4 |
+| Email | 4 / 4 |
 | Logs | 0 / 6 |
 | Network | 0 / 6 |
 | Disk | 0 / 5 |
