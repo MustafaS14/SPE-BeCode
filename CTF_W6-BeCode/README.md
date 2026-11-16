@@ -30,6 +30,7 @@ Played solo — helping other students is allowed, but flags are never shared.
 | [writeups/warmup.md](writeups/warmup.md) | Warm-up category — all 4 challenges, CyberChef-style decoding done via equivalent one-line Python for each |
 | [writeups/email.md](writeups/email.md) | Email category — all 4 challenges, spotting the two malicious messages in `maildir.zip` and reading their headers |
 | [writeups/osint.md](writeups/osint.md) | OSINT category — the one challenge, reading `/Author` out of the PDF's raw `/Info` dictionary |
+| [writeups/logs.md](writeups/logs.md) | Logs category — all 6 challenges, separating the `\CoachOrchestration\` lab scaffold from the real `\Microsoft\Windows\SyncHelper\Refresh` persistence/beacon task, found via `strings -el` on the exported `.evtx` files |
 
 ## Progress
 
@@ -37,7 +38,7 @@ Played solo — helping other students is allowed, but flags are never shared.
 |---|---|
 | Warm-up | 4 / 4 |
 | Email | 4 / 4 |
-| Logs | 0 / 6 |
+| Logs | 6 / 6 |
 | Network | 0 / 6 |
 | Disk | 0 / 5 |
 | Hunt | 0 / 3 |
