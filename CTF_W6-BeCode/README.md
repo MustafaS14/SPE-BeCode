@@ -33,6 +33,7 @@ Played solo — helping other students is allowed, but flags are never shared.
 | [writeups/logs.md](writeups/logs.md) | Logs category — all 6 challenges, separating the `\CoachOrchestration\` lab scaffold from the real `\Microsoft\Windows\SyncHelper\Refresh` persistence/beacon task, found via `strings -el` on the exported `.evtx` files |
 | [writeups/network.md](writeups/network.md) | Network category — all 6 challenges, separating the `b.` DNS beacon channel from the `x.` Base32 DNS-exfil channel in `ctf_fire_dns.pcap`, then correlating a beacon query's PID back to the Sysmon log via raw `.evtx` byte offsets |
 | [writeups/disk.md](writeups/disk.md) | Disk category — all 5 challenges, including a from-scratch XPRESS/MS-XCA Huffman decompressor for the compressed Prefetch file and a hand-rolled `$MFT` record parser for the timestomping check |
+| [writeups/hunt.md](writeups/hunt.md) | Hunt category — all 3 challenges, via a from-scratch real binary-XML (MS-EVTX BinXml) parser written against `Security_DC01_tir.evtx`'s substitution arrays, since this evidence file's values weren't readable as literal text the way the lab-generated logs were |
 
 ## Progress
 
@@ -43,7 +44,7 @@ Played solo — helping other students is allowed, but flags are never shared.
 | Logs | 6 / 6 |
 | Network | 6 / 6 |
 | Disk | 5 / 5 |
-| Hunt | 0 / 3 |
+| Hunt | 3 / 3 |
 | OSINT | 1 / 1 |
 | Encoding | 0 / 1 |
 | Memory | 0 / 2 (bonus) |
