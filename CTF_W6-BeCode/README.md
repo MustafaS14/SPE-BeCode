@@ -35,6 +35,7 @@ Played solo — helping other students is allowed, but flags are never shared.
 | [writeups/disk.md](writeups/disk.md) | Disk category — all 5 challenges, including a from-scratch XPRESS/MS-XCA Huffman decompressor for the compressed Prefetch file and a hand-rolled `$MFT` record parser for the timestomping check |
 | [writeups/hunt.md](writeups/hunt.md) | Hunt category — all 3 challenges, via a from-scratch real binary-XML (MS-EVTX BinXml) parser written against `Security_DC01_tir.evtx`'s substitution arrays, since this evidence file's values weren't readable as literal text the way the lab-generated logs were |
 | [writeups/memory.md](writeups/memory.md) | Memory category (bonus) — both challenges, recovering the live beacon process and command line from a `strings`-readable PowerShell module-logging record cached in the ~4GB RAM dump |
+| [writeups/encoding.md](writeups/encoding.md) | Encoding category — the one challenge, peeling base64 → repeating-key XOR (key recovered by crib-dragging the gzip magic bytes) → gzip off `stage2.b64.txt` |
 
 ## Progress
 
@@ -47,7 +48,7 @@ Played solo — helping other students is allowed, but flags are never shared.
 | Disk | 5 / 5 |
 | Hunt | 3 / 3 |
 | OSINT | 1 / 1 |
-| Encoding | 0 / 1 |
+| Encoding | 1 / 1 |
 | Memory | 2 / 2 (bonus) |
 
 *(Updated as challenges are solved.)*
