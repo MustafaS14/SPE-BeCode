@@ -34,6 +34,7 @@ Played solo — helping other students is allowed, but flags are never shared.
 | [writeups/network.md](writeups/network.md) | Network category — all 6 challenges, separating the `b.` DNS beacon channel from the `x.` Base32 DNS-exfil channel in `ctf_fire_dns.pcap`, then correlating a beacon query's PID back to the Sysmon log via raw `.evtx` byte offsets |
 | [writeups/disk.md](writeups/disk.md) | Disk category — all 5 challenges, including a from-scratch XPRESS/MS-XCA Huffman decompressor for the compressed Prefetch file and a hand-rolled `$MFT` record parser for the timestomping check |
 | [writeups/hunt.md](writeups/hunt.md) | Hunt category — all 3 challenges, via a from-scratch real binary-XML (MS-EVTX BinXml) parser written against `Security_DC01_tir.evtx`'s substitution arrays, since this evidence file's values weren't readable as literal text the way the lab-generated logs were |
+| [writeups/memory.md](writeups/memory.md) | Memory category (bonus) — both challenges, recovering the live beacon process and command line from a `strings`-readable PowerShell module-logging record cached in the ~4GB RAM dump |
 
 ## Progress
 
@@ -47,6 +48,6 @@ Played solo — helping other students is allowed, but flags are never shared.
 | Hunt | 3 / 3 |
 | OSINT | 1 / 1 |
 | Encoding | 0 / 1 |
-| Memory | 0 / 2 (bonus) |
+| Memory | 2 / 2 (bonus) |
 
 *(Updated as challenges are solved.)*
